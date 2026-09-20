@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<title>SpatialStage</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2714%27 fill=%27%23111%27 stroke=%27%2300ff88%27 stroke-width=%272%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%273%27 fill=%27%2300ff88%27/%3E%3Ccircle cx=%2724%27 cy=%2710%27 r=%273%27 fill=%27%23ffcc33%27/%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; background: #111; color: #eee; margin: 0; padding: 14px; }
+
+  /* Three columns on a desktop as sketched, collapsing to one on a phone.
+     The radar column is ordered first when stacked - it is the thing worth
+     seeing without scrolling. */
+  #app { display: grid; gap: 16px; grid-template-columns: 1fr; max-width: 1500px; margin: 0 auto; }
+  @media (min-width: 900px) {
+    #app { grid-template-columns: minmax(300px, 1fr) minmax(360px, 1.1fr) minmax(240px, 0.8fr); align-items: start; }
+    #centerCol { order: 0; }
+  }
+  @media (max-width: 899px) { #centerCol { order: -1; } }
+
+  /* min-width:0: a grid item's (or flex item's) default min-width is auto,
+     which refuses to shrink below its content's min-content size - this is
+     what let a wide-enough child (traced to the stem-grid below) push this
+     whole panel past the viewport at phone width despite nothing in it
+     individually measuring wider than the screen. */
+  .panel { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px; min-width: 0; }
+  .panel-title { color: #666; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 10px; }
+
+  #status { color: #888; font-size: 0.8rem; text-align: center; margin-bottom: 8px; }
+  #status.connected { color: #0f8; }
+  #val { font-size: 2rem; text-align: center; margin: 2px 0; font-variant-numeric: tabular-nums; }
+  #stemLabel { color: #0f8; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; min-height: 1.2em; }
+
+  /* --- stem cards --- */
+  /* auto-fit rather than a fixed 2 columns: at phone width the scrollbar eats
+     enough of the viewport that a rigid two-column grid overflows and clips
+     the right-hand cards. This drops to one column instead. */
+  .stem-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(142px, 1fr)); gap: 10px; min-width: 0; }
+  .stem-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 10px 8px 8px; min-width: 0; }
+  /* Icon sits above the dial rather than inside it, so the dial face stays
+     clear for the position pointer. */
+  .card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding-left: 2px; }
+  .card-head svg { width: 22px; height: 22px; flex: none; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .card-row { display: flex; align-items: stretch; justify-content: center; gap: 9px; min-width: 0; }
+  /* The dial shrinks to whatever the column allows instead of being a fixed
+     width the card cannot go below - a fixed size overflowed its grid track on
+     a phone and clipped the buttons off the right-hand cards. */
+  .knob { flex: 1 1 0; min-width: 0; max-width: 112px; aspect-ratio: 1 / 1; touch-action: none; cursor: grab; }
+  .knob:active { cursor: grabbing; }
+  .knob svg { width: 100%; height: 100%; display: block; }
+  .knob-track { fill: rgba(255,255,255,0.05); stroke: rgba(255,255,255,0.16); stroke-width: 2; }
+  .knob-sel { fill: none; stroke-width: 2.5; }
+  .knob-ptr { stroke-width: 4; stroke-linecap: round; }
+  .knob-hub { stroke-width: 2; fill: #111; }
+
+  /* Custom vertical fader: a native vertical range is inconsistent across
+     mobile browsers, and pointer events are needed for the knob anyway. */
+  .fader { width: 30px; align-self: stretch; min-height: 74px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+           border-radius: 7px; position: relative; touch-action: none; overflow: hidden; flex: none; cursor: ns-resize; }
+  .fader-fill { position: absolute; left: 0; right: 0; bottom: 0; background: currentColor; opacity: 0.5; }
+  .fader-cap { position: absolute; left: 0; right: 0; height: 3px; background: currentColor; }
+
+  .card-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; gap: 5px; }
+  .stem-name { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.05em; }
+  .stem-az { font-size: 0.68rem; color: #888; font-variant-numeric: tabular-nums; min-width: 34px; }
+  .tog-btn { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #888;
+             border-radius: 6px; font-size: 0.58rem; font-weight: 800; letter-spacing: 0.04em;
+             padding: 5px 8px; cursor: pointer; flex: 1; }
+  .arm-btn.armed { background: rgba(0,255,136,0.18); border-color: #0f8; color: #0f8; }
+  .mute-btn.muted { background: rgba(255,60,60,0.22); border-color: #f55; color: #f88; }
+  .card-row2 { display: flex; gap: 5px; margin-top: 6px; }
+  .spatial-btn, .center-btn { flex: 1; }
+  .spatial-btn.open { background: rgba(255,255,255,0.16); color: #ddd; }
+  .stem-card.muted { opacity: 0.55; }
+
+  /* --- spatial (pd/spatial) advanced panel: one shared panel for whichever
+     stem's SPATIAL button was last tapped, rather than six duplicated
+     panels - these controls are occasional/exploratory, not something
+     every stem needs visible at once the way mute/arm are. ---*/
+  #spatialPanel { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); }
+  #spatialPanel[hidden] { display: none; }
+  .spatial-title { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.05em; margin-bottom: 8px; }
+  .seg-row { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .seg-btn { flex: 1; min-width: 64px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.14); color: #999;
+             border-radius: 7px; font-size: 0.62rem; font-weight: 700; padding: 7px 4px; cursor: pointer; text-transform: uppercase; }
+  .seg-btn.active { background: rgba(0,255,136,0.16); border-color: #0f8; color: #0f8; }
+  .field-label { font-size: 0.62rem; color: #777; text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 4px; }
+  .weight-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-width: 0; }
+  .weight-row label { font-size: 0.64rem; color: #999; width: 32px; flex: none; }
+  /* min-width:0 matters here specifically: a range input's default intrinsic
+     min-width resists flex-shrink even with flex:1 set, which pushed every
+     containing panel wider than the phone viewport - the same class of bug
+     already hit once with a nowrap song title's min-width:auto. */
+  .weight-row input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
+  .weight-row output { font-size: 0.64rem; color: #ccc; width: 34px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+  #spatialBpm { width: 70px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.8rem; }
+
+  .preset-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .preset-row input[type=number] { width: 60px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 8px; font-size: 0.85rem; }
+  .preset-row button { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); color: #ccc; border-radius: 8px; padding: 9px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; cursor: pointer; }
+  #presetSaveBtn { background: rgba(0,255,136,0.14); border-color: #0f8; color: #0f8; }
+
+  /* --- radar --- */
+  #radar { width: 100%; height: auto; display: block; max-width: 420px; margin: 0 auto; }
+  .grid-ring { fill: rgba(255,255,255,0.03); stroke: rgba(255,255,255,0.14); stroke-width: 1; }
+  .grid-line { stroke: rgba(255,255,255,0.09); stroke-width: 1; }
+  .grid-text { fill: #555; font-size: 11px; font-weight: 700; text-anchor: middle; }
+  .head { fill: rgba(255,255,255,0.22); }
+  .stem-label { font-size: 11px; font-weight: 700; }
+  .width-arc { fill: none; stroke-width: 5; stroke-linecap: round; }
+  .stem-dot { stroke: #111; stroke-width: 1.5; }
+  .sel-ring { fill: none; stroke-width: 1.5; opacity: 0.9; }
+
+  /* --- songs --- */
+  .song-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer;
+               font-size: 0.78rem; color: #bbb; border: 1px solid transparent; min-width: 0; }
+  .song-item:hover { background: rgba(255,255,255,0.05); }
+  .song-item.playing { background: rgba(0,255,136,0.14); border-color: #0f8; color: #0f8; font-weight: 700; }
+  .song-mark { width: 12px; flex: none; font-size: 0.7rem; }
+  /* min-width:0 is what makes the ellipsis work at all: a flex item defaults to
+     min-width:auto, so a nowrap song title reported its full un-wrapped width
+     as a minimum and pushed every panel wider than the phone screen. */
+  .song-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .song-duration { flex: none; font-size: 0.66rem; color: #777; font-variant-numeric: tabular-nums; }
+
+  /* --- transport --- */
+  #transportBar { display: flex; gap: 8px; justify-content: center; margin-bottom: 8px; }
+  .tport-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #ddd;
+               border-radius: 8px; width: 44px; height: 40px; font-size: 1.1rem; cursor: pointer; }
+  .tport-btn-main { background: #0f8; color: #111; border-color: #0f8; width: 56px; font-size: 1.25rem; }
+  #recordBtn { color: #f66; }
+  #recordBtn.recording { background: #f33; color: #fff; border-color: #f33; animation: rec-pulse 1.2s infinite; }
+  @keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  #recordStatus a { color: #0f8; }
+  #progressRow { display: flex; align-items: center; gap: 8px; }
+  #progressRow input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
+  .time-label { font-size: 0.62rem; color: #888; font-variant-numeric: tabular-nums; flex: none; width: 32px; }
+  #durTime { text-align: right; }
+  #volumeRow { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px; }
+  #volumeRow input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
+  #masterVolLabel { margin: 0; flex: none; white-space: nowrap; }
+
+  /* --- buttons --- */
+  .quick-row { display: flex; gap: 8px; margin-top: 10px; }
+  .quick-row button { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.13); color: #999;
+                      border-radius: 8px; padding: 8px; font-size: 0.66rem; font-weight: 700; text-transform: uppercase; cursor: pointer; }
+  button.action { font-size: 0.9rem; font-weight: 700; padding: 12px; border-radius: 10px; border: none; width: 100%; margin-top: 8px; cursor: pointer; }
+  #sensorBtn { background: #eee; color: #111; }
+  #sensorBtn.active { background: #0f8; }
+  #calibrateBtn { background: #333; color: #eee; }
+  input[type=range] { width: 100%; margin-top: 14px; accent-color: #0f8; }
+  .hint { color: #666; font-size: 0.66rem; text-align: center; margin-top: 6px; line-height: 1.4; }
+
+  @media (max-width: 470px) {
+    .fader { width: 26px; }
+    .card-row { gap: 7px; }
+    .tog-btn { padding: 5px 4px; letter-spacing: 0; }
+  }
+
+  /* --- per-stem level meter, under the card head --- */
+  .level { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.07); margin: -4px 2px 8px; overflow: hidden; }
+  .level-fill { height: 100%; width: 0%; background: currentColor; opacity: 0.85; transition: width 60ms linear; }
+  /* --- web-app additions --- */
+  #startOverlay { position: fixed; inset: 0; background: rgba(10,10,10,0.94); display: flex; flex-direction: column;
+                  align-items: center; justify-content: center; gap: 14px; z-index: 10; padding: 24px; text-align: center; }
+  #startOverlay[hidden] { display: none; }
+  #startOverlay h1 { font-size: 1.4rem; margin: 0; letter-spacing: 0.04em; }
+  #startOverlay p { color: #888; font-size: 0.8rem; max-width: 380px; line-height: 1.5; margin: 0; }
+  #startBtn { background: #0f8; color: #111; border: none; border-radius: 12px; padding: 14px 34px; font-size: 1rem; font-weight: 800; cursor: pointer; }
+  .drop-zone { border: 1px dashed rgba(255,255,255,0.22); border-radius: 10px; padding: 14px 10px; text-align: center; color: #888;
+               font-size: 0.72rem; line-height: 1.5; cursor: pointer; margin-bottom: 10px; }
+  .drop-zone.over { border-color: #0f8; color: #0f8; background: rgba(0,255,136,0.06); }
+  .drop-zone strong { color: #ccc; }
+  #fileInput { display: none; }
+  .mode-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .mode-row .field-label { margin: 0; flex: none; }
+  .mode-row .seg-row { margin: 0; flex: 1; }
+  #loadStatus { color: #0f8; }
+  .stem-slots { display: flex; gap: 3px; flex: none; }
+  .stem-slots i { width: 6px; height: 6px; border-radius: 50%; display: block; opacity: 0.25; }
+  .stem-slots i.on { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="startOverlay">
+  <h1>SpatialStage</h1>
+  <p>Spatial stem player. Headphones on. Add a song, then drag the dials or rotate your phone to move each stem around your head.</p>
+  <button id="startBtn">Start</button>
+</div>
+
+<div id="app">
+
+  <section class="panel" id="stemCol">
+    <div class="panel-title">Stems &mdash; drag dial to place &middot; ARM = follows rotate</div>
+    <div class="stem-grid" id="stemGrid"></div>
+    <div class="quick-row">
+      <button id="selectAllBtn">Arm All</button>
+      <button id="selectNoneBtn">Arm None</button>
+    </div>
+    <div class="quick-row">
+      <button id="muteNoneBtn">Unmute All</button>
+      <button id="muteAllBtn">Mute All</button>
+    </div>
+
+    <div id="spatialPanel" hidden>
+      <div class="spatial-title">SPATIAL &mdash; <span id="spatialStemName"></span></div>
+
+      <div class="field-label">Smoothing (final output, any source &mdash; left = smooth/gliding, right = instant/jittery)</div>
+      <div class="weight-row"><label>Amount</label><input type="range" id="smoothingSlider" min="0.02" max="1" step="0.01"><output id="smoothingOut"></output></div>
+
+      <div class="field-label">Blend mode</div>
+      <div class="seg-row" id="blendModeRow">
+        <button class="seg-btn" data-value="0">Two-Stage</button>
+        <button class="seg-btn" data-value="1">Three-Way</button>
+      </div>
+      <div id="blendTwoRow">
+        <div class="weight-row"><label>Ph&harr;FFT</label><input type="range" id="ts1" min="0" max="1" step="0.01"><output id="ts1Out"></output></div>
+        <div class="weight-row"><label>&harr;Preset</label><input type="range" id="ts2" min="0" max="1" step="0.01"><output id="ts2Out"></output></div>
+      </div>
+      <div id="blendThreeRow" hidden>
+        <div class="weight-row"><label>Phone</label><input type="range" id="w1" min="0" max="1" step="0.01"><output id="w1Out"></output></div>
+        <div class="weight-row"><label>FFT</label><input type="range" id="w2" min="0" max="1" step="0.01"><output id="w2Out"></output></div>
+        <div class="weight-row"><label>Preset</label><input type="range" id="w3" min="0" max="1" step="0.01"><output id="w3Out"></output></div>
+      </div>
+
+      <div class="field-label">FFT source (drives azimuth from this stem's own audio)</div>
+      <div class="seg-row" id="fftModeRow">
+        <button class="seg-btn" data-value="0">Pitch</button>
+        <button class="seg-btn" data-value="1">Onset</button>
+        <button class="seg-btn" data-value="2">Band</button>
+        <button class="seg-btn" data-value="3">Precalc</button>
+      </div>
+
+      <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
+      <div class="seg-row" id="fftSrcRow">
+        <button class="seg-btn" data-value="0">Vocals</button>
+        <button class="seg-btn" data-value="1">Drums</button>
+        <button class="seg-btn" data-value="2">Bass</button>
+        <button class="seg-btn" data-value="3">Guitar</button>
+        <button class="seg-btn" data-value="4">Piano</button>
+        <button class="seg-btn" data-value="5">Other</button>
+      </div>
+
+      <div class="field-label">Preset motion</div>
+      <div class="seg-row" id="presetModeRow">
+        <button class="seg-btn" data-value="0">Circle</button>
+        <button class="seg-btn" data-value="1">Sine</button>
+        <button class="seg-btn" data-value="2">Tempo-Sync</button>
+      </div>
+      <div class="weight-row"><label>Rate</label><input type="range" id="presetRate" min="0" max="1" step="0.01"><output id="presetRateOut"></output></div>
+
+      <div class="field-label">Tempo source (for Tempo-Sync motion)</div>
+      <div class="seg-row" id="tempoSourceRow">
+        <button class="seg-btn" data-value="0">Manual</button>
+        <button class="seg-btn" data-value="1">MIDI Clock</button>
+        <button class="seg-btn" data-value="2">Link</button>
+      </div>
+      <div class="weight-row"><label>BPM</label><input type="number" id="spatialBpm" min="20" max="300" step="1"></div>
+
+      <div class="field-label">Base azimuth</div>
+      <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
+
+      <div class="field-label">Preset file (per song)</div>
+      <div class="preset-row">
+        <button id="presetSaveBtn">Save</button>
+        <button id="presetLoadBtn">Load</button>
+        <button id="presetExportBtn" title="Download all saved presets as JSON">Export</button>
+      </div>
+      <div class="hint">Save/load applies to all 6 stems at once, stored in this browser under the current song's name.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="centerCol">
+    <div id="status">tap Start to enable audio</div>
+    <div id="stemLabel">ALL ARMED</div>
+    <div id="val">0&deg;</div>
+    <!-- Wider than the 300-unit circle: stem labels sit outside the ring and
+         "GUITAR -75" at the far left was being cut off by the viewport. -->
+    <svg id="radar" viewBox="-52 0 404 300">
+      <circle class="grid-ring" cx="150" cy="150" r="112"></circle>
+      <circle class="grid-ring" cx="150" cy="150" r="56" fill="none"></circle>
+      <line class="grid-line" x1="150" y1="38" x2="150" y2="262"></line>
+      <line class="grid-line" x1="38" y1="150" x2="262" y2="150"></line>
+      <text class="grid-text" x="150" y="22">FRONT</text>
+      <text class="grid-text" x="150" y="288">BEHIND</text>
+      <text class="grid-text" x="-38" y="154">L</text>
+      <text class="grid-text" x="338" y="154">R</text>
+      <circle class="head" cx="150" cy="150" r="9"></circle>
+      <polygon class="head" points="150,136 145,145 155,145"></polygon>
+      <g id="stemLayer"></g>
+    </svg>
+    <input type="range" id="slider" min="-180" max="180" value="0" step="1">
+    <div class="hint">Rotates armed stems together. Dials set each stem individually.</div>
+    <button id="sensorBtn" class="action">Enable Motion</button>
+    <button id="calibrateBtn" class="action">Zero / Recenter</button>
+  </section>
+
+  <section class="panel" id="songCol">
+    <div class="panel-title">Songs</div>
+    <div id="transportBar">
+      <button id="prevBtn" class="tport-btn" title="Previous">&#9198;</button>
+      <button id="playPauseBtn" class="tport-btn tport-btn-main" title="Play/Pause">&#9654;</button>
+      <button id="stopBtn" class="tport-btn" title="Stop">&#9632;</button>
+      <button id="nextBtn" class="tport-btn" title="Next">&#9197;</button>
+      <button id="recordBtn" class="tport-btn" title="Record the live mix to a WAV file">&#9679;</button>
+    </div>
+    <div id="progressRow">
+      <span id="posTime" class="time-label">0:00</span>
+      <input type="range" id="seekBar" min="0" max="1" step="0.1" value="0">
+      <span id="durTime" class="time-label">0:00</span>
+    </div>
+    <div id="volumeRow">
+      <span class="field-label" id="masterVolLabel">Master 40%</span>
+      <input type="range" id="masterVolSlider" min="0" max="1" step="0.01" value="0.4">
+    </div>
+    <div class="hint" id="recordStatus" hidden></div>
+    <div class="drop-zone" id="dropZone">
+      <strong>Add songs</strong> &mdash; tap or drop files here<br>
+      12-channel show WAV, or separate stems named vocals / drums / bass / guitar / piano / other
+    </div>
+    <input type="file" id="fileInput" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,audio/*">
+    <div id="songList"></div>
+    <div class="hint" id="songHint">&nbsp;</div>
+    <div class="mode-row">
+      <span class="field-label">Panner</span>
+      <div class="seg-row" id="panModeRow">
+        <button class="seg-btn active" data-value="pd">Pd match</button>
+        <button class="seg-btn" data-value="hrtf">HRTF</button>
+      </div>
+    </div>
+    <div class="hint">Pd match reproduces the live rig's pan + inter-aural delay exactly. HRTF uses the browser's head-related response for a more out-of-head image.</div>
+  </section>
+
+</div>
+
+<script src="js/wav.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/motion.js"></script>
+<script src="js/songs.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
