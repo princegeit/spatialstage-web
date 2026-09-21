@@ -38,7 +38,18 @@ changing anything here, run `publish.bat` to push the update.
 4. **SPATIAL** on a stem card opens the motion panel: FFT-driven motion,
    preset orbits, tempo sync, blend weights, smoothing - the same controls
    and the same math as the Pd rig's `pd/spatial` abstractions.
-5. **●** records exactly what you hear to a WAV download.
+5. **Hand Tracking (camera)** turns on the webcam and tracks up to two
+   hands (MediaPipe, on-device - no video leaves the page). The camera
+   frame is the room seen from above with you in the middle: your hand is
+   a cursor on the radar. Two gestures:
+   - *Pinch to grab* - pinch thumb + index near a stem's dot to pick it up
+     and carry it round your head; pinch in empty space to rotate every
+     armed stem together. Each hand can hold its own stem.
+   - *Open hand steers* - an open hand turns the whole armed group as it
+     moves; a fist freezes it.
+   *Reach* sets how far a hand has to travel; *Flip camera* / *Mirror* for
+   rear cameras or a laptop pointed at the audience.
+6. **●** records exactly what you hear to a WAV download.
 
 Presets save in the browser under the current song's name (Export downloads
 them all as JSON).
@@ -60,6 +71,7 @@ them all as JSON).
 | Presets | Per song index, files on disk | Per song name, browser localStorage + JSON export |
 | Recording | `writesf~` + ffmpeg MP3 | WAV download |
 | Phone | Remote control over LAN | The phone *is* the player (open the page on it) |
+| Hand tracking | – | Camera + MediaPipe Hand Landmarker 0.10.35 (loaded from CDN on first use, ~19 MB cached) |
 
 Not done: PC↔phone remote control (would need WebRTC or a relay), and
 in-browser stem separation (Demucs is a server job - see the top-level
@@ -72,6 +84,7 @@ ROADMAP for the bring-your-own-stems discussion).
     js/engine.js   Web Audio graph, transport, recording, precalc envelope
     js/motion.js   stem-control / blend-mixer / preset-source / tempo-source / fft-source / smooth-azimuth
     js/songs.js    file scanning + on-demand decoding
+    js/hands.js    camera + MediaPipe hand landmarks -> pinch/fist gestures
     js/app.js      UI wiring
     serve.bat      local http server for testing
     publish.bat    mirror this folder to the public GitHub Pages repo

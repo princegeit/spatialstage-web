@@ -649,6 +649,162 @@ function handleOrientation(e) {
   applyRotation(delta);
 }
 
+/* ---------------- hand tracking (camera) ---------------- */
+
+// A hand is a cursor on the radar: the camera frame is the room seen from
+// above, with you at the centre - left/right in the frame is left/right
+// around your head, up in the frame is in front, down is behind. Reach
+// scales how far a hand has to travel. Two gesture modes:
+//   0 pinch-to-grab: a pinch that starts near a stem's dot picks that stem
+//     up; it follows the hand until release. A pinch in empty space rotates
+//     the whole armed group by the hand's movement, like the slider. Each
+//     hand grabs independently.
+//   1 open-hand steers: the first hand's movement rotates the armed group
+//     while it is open; a fist freezes it (and re-anchors on reopen).
+// Positions go in through the same path as a dial drag (azim + sendStem),
+// so fft/preset blending and smoothing still apply downstream.
+const handBtn = $('handBtn'), handPanel = $('handPanel'), handStatus = $('handStatus');
+const handVideo = $('handVideo'), handCanvas = $('handCanvas'), camBox = $('camBox');
+const handModeRow = $('handModeRow'), handModeHint = $('handModeHint');
+const handReachEl = $('handReach'), handReachOut = $('handReachOut');
+const handLayer = $('handLayer');
+const HAND_COLOUR = ['#00ff88', '#ffcc33'];
+const GRAB_RADIUS_DEG = 30;
+const hand = new SSHandTracker();
+let handMode = 0, handReach = 1.4;
+const handState = [{ grab: null, lastAz: 0 }, { grab: null, lastAz: 0 }];
+let handHint = null;
+
+function handToRadar(h) {
+  const rx = (h.x - 0.5) * 2 * handReach;
+  const ry = (0.5 - h.y) * 2 * handReach;
+  return { az: wrap180(Math.atan2(rx, ry) * 180 / Math.PI), r: Math.min(1, Math.hypot(rx, ry)) };
+}
+
+function nearestStemTo(az) {
+  let best = null, bestD = GRAB_RADIUS_DEG;
+  for (const s of ALL_STEMS) {
+    if (mutedStems.has(s)) continue;
+    if (handState.some(st => st.grab === s)) continue; // the other hand has it
+    const d = Math.abs(wrap180(motion.stems[s].effective - az));
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
+}
+
+function rotateArmedBy(d) {
+  if (!d) return;
+  for (const stem of selectedStems) { azim[stem] = wrap180((azim[stem] || 0) + d); sendStem(stem); }
+}
+
+function handleHands(hands) {
+  const seen = new Set(hands.map(h => h.index));
+  for (let i = 0; i < 2; i++) if (!seen.has(i)) handState[i].grab = null;
+  if (handMode === 0) {
+    for (const h of hands) {
+      const st = handState[h.index];
+      const { az } = handToRadar(h);
+      if (h.pinch && !st.grab) {
+        st.grab = nearestStemTo(az) || 'group';
+        st.lastAz = az;
+        buzz(10);
+      } else if (h.pinch && st.grab) {
+        if (st.grab === 'group') rotateArmedBy(wrap180(az - st.lastAz));
+        else { azim[st.grab] = az; sendStem(st.grab); }
+        st.lastAz = az;
+      } else if (!h.pinch && st.grab) {
+        st.grab = null;
+      }
+    }
+  } else {
+    const h = hands[0];
+    const st = handState[0];
+    if (h) {
+      const { az } = handToRadar(h);
+      if (h.fist) { st.grab = null; }
+      else if (!st.grab) { st.grab = 'group'; st.lastAz = az; }
+      else { rotateArmedBy(wrap180(az - st.lastAz)); st.lastAz = az; }
+    }
+  }
+  refreshCards(); requestRadar();
+}
+
+function drawHandCursors(hands) {
+  handLayer.textContent = '';
+  for (const h of hands) {
+    const st = handState[h.index];
+    const { az, r } = handToRadar(h);
+    const [x, y] = polar(az, r * RING);
+    const colour = HAND_COLOUR[h.index];
+    const active = handMode === 0 ? h.pinch : !h.fist;
+    handLayer.appendChild(svgEl('circle', { class: 'hand-cursor' + (active ? ' pinch' : ''), cx: x, cy: y, r: active ? 9 : 12, fill: colour, stroke: colour }));
+    const t = svgEl('text', { class: 'hand-cursor-label', x, y: y + 3.5 });
+    t.textContent = h.handedness ? h.handedness[0] : String(h.index + 1);
+    handLayer.appendChild(t);
+    if (st.grab && st.grab !== 'group') {
+      const [sx, sy] = polar(motion.stems[st.grab].effective, RING);
+      handLayer.appendChild(svgEl('line', { x1: x, y1: y, x2: sx, y2: sy, stroke: colour, 'stroke-width': 1.5, 'stroke-dasharray': '3 3', opacity: 0.8 }));
+    }
+  }
+}
+
+hand.onHands = (hands) => { handleHands(hands); drawHandCursors(hands); refreshHandStatus(hands); };
+hand.onStatus = (t) => { handHint = t; refreshHandStatus(hand.hands); };
+
+function refreshHandStatus(hands) {
+  if (!hand.running) { handStatus.textContent = handHint || 'off'; handStatus.classList.remove('on'); return; }
+  const grabs = handState.filter(st => st.grab).map(st => st.grab === 'group' ? 'armed group' : st.grab);
+  handStatus.textContent = 'tracking · ' + Math.round(hand.fps) + ' fps · ' + hands.length + (hands.length === 1 ? ' hand' : ' hands') + (grabs.length ? ' · holding ' + grabs.join(', ') : '');
+  handStatus.classList.add('on');
+}
+
+handBtn.addEventListener('click', async () => {
+  if (hand.running) {
+    hand.stop();
+    handBtn.classList.remove('active'); handBtn.textContent = 'Hand Tracking (camera)';
+    handLayer.textContent = '';
+    for (const st of handState) st.grab = null;
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('This browser cannot open the camera here. Hand tracking needs https:// (or localhost) and a camera.');
+    return;
+  }
+  handPanel.hidden = false;
+  handBtn.disabled = true; handBtn.textContent = 'Starting camera...';
+  try {
+    await hand.start(handVideo, handCanvas);
+    camBox.classList.toggle('mirror', hand.mirror);
+    handBtn.classList.add('active'); handBtn.textContent = 'Hand Tracking: on';
+    wantWakeLock = true; requestWakeLock();
+    buzz([30, 30, 30]);
+  } catch (e) {
+    handStatus.textContent = 'could not start: ' + e.message;
+    handBtn.textContent = 'Hand Tracking (camera)';
+  }
+  handBtn.disabled = false;
+});
+
+bindSegRow(handModeRow, (v) => {
+  handMode = v;
+  setSegActive(handModeRow, v);
+  for (const st of handState) st.grab = null;
+  handModeHint.textContent = v === 0
+    ? 'Pinch thumb + index near a stem on the radar to pick it up and drag it round your head; pinch in empty space to rotate every armed stem together. Two hands, two stems.'
+    : 'Hold an open hand up and move it: every armed stem turns with it. Make a fist to freeze; open again to continue from there.';
+});
+handReachEl.addEventListener('input', () => { handReach = Number(handReachEl.value); handReachOut.textContent = handReach.toFixed(2); });
+$('handFlipBtn').addEventListener('click', async () => {
+  await hand.switchCamera();
+  camBox.classList.toggle('mirror', hand.mirror);
+  $('handMirrorBtn').textContent = 'Mirror: ' + (hand.mirror ? 'on' : 'off');
+});
+$('handMirrorBtn').addEventListener('click', () => {
+  hand.mirror = !hand.mirror;
+  camBox.classList.toggle('mirror', hand.mirror);
+  $('handMirrorBtn').textContent = 'Mirror: ' + (hand.mirror ? 'on' : 'off');
+});
+
 /* ---------------- init ---------------- */
 
 buildCards();
