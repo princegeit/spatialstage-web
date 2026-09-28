@@ -93,14 +93,24 @@
       this.mirror = this.facing === 'user';
       await this.load();
       this._status('opening camera...');
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: this.facing, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
-        audio: false,
-      });
-      video.srcObject = this.stream;
-      video.muted = true; video.playsInline = true;
-      await video.play();
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: this.facing, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+          audio: false,
+        });
+        video.srcObject = this.stream;
+        video.muted = true; video.playsInline = true;
+        await video.play();
+      } catch (e) {
+        // Release a camera that opened but would not play, so the
+        // recording light does not stay on behind an error message.
+        if (this.stream) { for (const t of this.stream.getTracks()) t.stop(); this.stream = null; }
+        video.srcObject = null;
+        throw e;
+      }
       this.running = true;
+      this._lastVideoTime = -1;
+      this._state = [{}, {}];
       this._fpsAt = performance.now(); this._frames = 0;
       this._status('tracking');
       this._loop();
@@ -111,23 +121,36 @@
       if (this.stream) { for (const t of this.stream.getTracks()) t.stop(); this.stream = null; }
       if (this.video) this.video.srcObject = null;
       this.hands = [];
+      this._state = [{}, {}];
       if (this.canvas) { const g = this.canvas.getContext('2d'); g.clearRect(0, 0, this.canvas.width, this.canvas.height); }
       if (this.onHands) this.onHands([]);
       this._status('off');
     }
 
+    // Laptops usually have no rear camera; if the other one will not open,
+    // go back to the one that worked and let the caller report why.
     async switchCamera() {
       const was = this.running;
       const v = this.video, c = this.canvas;
+      const prev = this.facing;
       this.stop();
-      this.facing = this.facing === 'user' ? 'environment' : 'user';
-      if (was) await this.start(v, c);
+      this.facing = prev === 'user' ? 'environment' : 'user';
+      if (!was) return;
+      try { await this.start(v, c); }
+      catch (e) {
+        this.facing = prev;
+        try { await this.start(v, c); } catch (e2) {}
+        throw e;
+      }
     }
 
     _loop() {
       if (!this.running) return;
       const video = this.video;
-      if (video.readyState >= 2 && video.videoWidth > 0) {
+      // rAF runs at display rate (60-120 Hz) but the camera delivers ~30 fps;
+      // running the model twice on one frame only burns battery.
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.currentTime !== this._lastVideoTime) {
+        this._lastVideoTime = video.currentTime;
         // detectForVideo requires strictly increasing timestamps.
         const ts = Math.max(performance.now(), this.lastTs + 1);
         this.lastTs = ts;
@@ -142,21 +165,41 @@
       requestAnimationFrame(() => this._loop());
     }
 
+    // MediaPipe's result order is not an identity - two hands can swap
+    // places in the array between frames, which made a held stem jump to
+    // the other hand. Each detection is matched to the slot whose last
+    // position is closest (trying both pairings when there are two).
+    _assignSlots(palms) {
+      const prev = this._state.map((st) => (st.x === undefined ? null : st));
+      const cost = (p, s) => (prev[s] ? Math.hypot(p.x - prev[s].x, p.y - prev[s].y) : 0.5);
+      if (palms.length === 1) {
+        if (prev[0] && prev[1]) return [cost(palms[0], 1) < cost(palms[0], 0) ? 1 : 0];
+        return [prev[1] ? 1 : 0]; // stay in the slot it was already tracked in
+      }
+      if (palms.length === 2) return cost(palms[0], 1) + cost(palms[1], 0) < cost(palms[0], 0) + cost(palms[1], 1) ? [1, 0] : [0, 1];
+      return [];
+    }
+
     _process(result) {
-      const lms = result.landmarks || [];
-      const hands = [];
-      for (let i = 0; i < Math.min(2, lms.length); i++) {
-        const lm = lms[i];
-        const label = result.handedness && result.handedness[i] && result.handedness[i][0] ? result.handedness[i][0].categoryName : '';
-        // Palm centre: mean of wrist and the four finger MCPs - steadier
-        // than the wrist alone, and does not jump when fingers curl.
+      const lms = (result.landmarks || []).slice(0, 2);
+      // Palm centre: mean of wrist and the four finger MCPs - steadier
+      // than the wrist alone, and does not jump when fingers curl.
+      const palms = lms.map((lm) => {
         let px = 0, py = 0;
         for (const k of [0, 5, 9, 13, 17]) { px += lm[k].x; py += lm[k].y; }
         px /= 5; py /= 5;
-        if (this.mirror) px = 1 - px;
+        return { x: this.mirror ? 1 - px : px, y: py };
+      });
+      const slots = this._assignSlots(palms);
+      const hands = [];
+      for (let i = 0; i < lms.length; i++) {
+        const lm = lms[i];
+        const label = result.handedness && result.handedness[i] && result.handedness[i][0] ? result.handedness[i][0].categoryName : '';
+        const px = palms[i].x, py = palms[i].y;
         const palm = dist(lm[0], lm[9]) || 1e-6;
         const pinchRatio = dist(lm[4], lm[8]) / palm;
-        const st = this._state[i];
+        const slot = slots[i];
+        const st = this._state[slot];
         // Hysteresis on pinch.
         if (st.pinch) { if (pinchRatio > PINCH_OFF) st.pinch = false; }
         else if (pinchRatio < PINCH_ON) st.pinch = true;
@@ -165,16 +208,16 @@
         const fist = curled >= 4;
         if (st.x === undefined) { st.x = px; st.y = py; }
         st.x += SMOOTH * (px - st.x); st.y += SMOOTH * (py - st.y);
-        hands.push({ index: i, x: st.x, y: st.y, pinch: !!st.pinch, fist, pinchRatio, handedness: this.mirror ? label : (label === 'Left' ? 'Right' : label === 'Right' ? 'Left' : label), landmarks: lm });
+        hands.push({ index: slot, x: st.x, y: st.y, pinch: !!st.pinch, fist, pinchRatio, handedness: this.mirror ? label : (label === 'Left' ? 'Right' : label === 'Right' ? 'Left' : label), landmarks: lm });
       }
       // Slots for hands no longer seen forget their smoothing state.
-      for (let i = hands.length; i < 2; i++) this._state[i] = {};
+      for (let s = 0; s < 2; s++) if (!slots.includes(s)) this._state[s] = {};
       this.hands = hands;
-      this._draw(lms, hands);
+      this._draw(hands);
       if (this.onHands) this.onHands(hands);
     }
 
-    _draw(lms, hands) {
+    _draw(hands) {
       const c = this.canvas; if (!c) return;
       const v = this.video;
       if (c.width !== v.videoWidth || c.height !== v.videoHeight) { c.width = v.videoWidth; c.height = v.videoHeight; }
@@ -183,9 +226,9 @@
       g.save();
       if (this.mirror) { g.translate(c.width, 0); g.scale(-1, 1); }
       g.lineWidth = 3; g.lineCap = 'round';
-      lms.forEach((lm, i) => {
-        const h = hands[i];
-        const colour = i === 0 ? '#00ff88' : '#ffcc33';
+      hands.forEach((h) => {
+        const lm = h.landmarks;
+        const colour = h.index === 0 ? '#00ff88' : '#ffcc33';
         g.strokeStyle = h && h.pinch ? '#fff' : colour;
         g.beginPath();
         for (const [a, b] of BONES) { g.moveTo(lm[a].x * c.width, lm[a].y * c.height); g.lineTo(lm[b].x * c.width, lm[b].y * c.height); }

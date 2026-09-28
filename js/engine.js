@@ -49,6 +49,10 @@
     // mobile browser, so this is called from a tap handler, not at load.
     async ensure() {
       if (this.ctx) { if (this.ctx.state !== 'running') await this.ctx.resume(); return this.ctx; }
+      // iOS routes Web Audio through the ringer channel by default, so the
+      // silent switch mutes the whole app; 'playback' makes it behave like a
+      // music player instead (Safari 16.4+, ignored everywhere else).
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
       this.ctx = ctx;
       this.master = ctx.createGain();
@@ -159,8 +163,10 @@
       if (!n || !this.playing) return 0;
       if (!this._meterBuf) this._meterBuf = new Float32Array(n.analyser.fftSize);
       n.analyser.getFloatTimeDomainData(this._meterBuf);
+      // The analyser window is oldest-first; the newest 512 samples are the tail.
+      const b = this._meterBuf, from = b.length - 512;
       let e = 0;
-      for (let i = 0; i < 512; i++) e += this._meterBuf[i] * this._meterBuf[i];
+      for (let i = from; i < b.length; i++) e += b[i] * b[i];
       const db = 20 * Math.log10(Math.sqrt(e / 512) + 1e-9);
       const v = (db + 60) / 60;
       return Math.max(0, Math.min(1, v)) * (this.muted[stem] ? 0 : this.volume[stem]);
@@ -183,8 +189,8 @@
     // song: { name, sampleRate, stems: { stem: [Float32Array L, Float32Array R] } }
     async loadSong(song) {
       await this.ensure();
-      this.stop();
-      const buffers = {}, envelopes = {};
+      this.unload();
+      const buffers = {};
       let duration = 0;
       for (const s of this.stems) {
         const pair = song.stems[s];
@@ -194,12 +200,35 @@
         buf.copyToChannel(pair[0], 0); buf.copyToChannel(pair[1], 1);
         buffers[s] = buf;
         duration = Math.max(duration, frames / song.sampleRate);
-        envelopes[s] = computeEnvelope(pair[0], pair[1]);
+        // Drop the decoded copy as soon as it is in an AudioBuffer, so a long
+        // 12-channel song does not sit in memory twice while the rest copy.
+        delete song.stems[s];
       }
-      this.song = { name: song.name, buffers, duration, envelopes }; // previous buffers are now unreferenced
+      // Envelopes are filled in by envelopeOf() the first time precalc mode
+      // asks for one - most songs never use it, and computing all six up front
+      // cost a noticeable pause on every load.
+      this.song = { name: song.name, buffers, duration, envelopes: {} };
       this.offset = 0;
       this._changed();
       return this.song;
+    }
+
+    // Forget the current song (and its buffers) - called before decoding the
+    // next one so two full songs never have to fit in memory at once.
+    unload() {
+      this.stop();
+      this.song = null;
+      this._changed();
+    }
+
+    envelopeOf(stem) {
+      const song = this.song;
+      if (!song || !song.buffers[stem]) return null;
+      if (!song.envelopes[stem]) {
+        const buf = song.buffers[stem];
+        song.envelopes[stem] = computeEnvelope(buf.getChannelData(0), buf.getChannelData(1));
+      }
+      return song.envelopes[stem];
     }
 
     /* ---------------- transport ---------------- */
@@ -209,7 +238,7 @@
       const ctx = this.ctx;
       const when = ctx.currentTime + 0.05;
       this.sources = {};
-      let first = true;
+      let longest = null;
       for (const s of this.stems) {
         const buf = this.song.buffers[s];
         if (!buf) continue;
@@ -217,12 +246,16 @@
         src.buffer = buf;
         src.connect(this.nodes[s].input);
         src.start(when, Math.min(this.offset, buf.duration));
-        if (first) {
-          // One stem's end is every stem's end - they are the same length.
-          src.onended = () => { if (this.sources && this.sources[s] === src && this.playing) this._finished(); };
-          first = false;
-        }
         this.sources[s] = src;
+        if (!longest || buf.duration > longest.buffer.duration) longest = src;
+      }
+      // Stems from different files need not be the same length, so the song
+      // ends when its longest stem does - ending on whichever came first
+      // cut the song short and left the longer stems playing underneath the
+      // next one.
+      if (longest) {
+        const src = longest;
+        src.onended = () => { if (this.sources && Object.values(this.sources).includes(src) && this.playing) this._finished(); };
       }
       this.startedAt = when;
       this.playing = true;
@@ -265,7 +298,7 @@
     }
 
     _finished() {
-      this.sources = null;
+      this._stopSources();
       this.playing = false;
       this.offset = 0;
       this._changed();
@@ -312,6 +345,7 @@
     }
 
     get isRecording() { return !!this.recorder; }
+    get recordingSeconds() { return this.recorder ? this.ctx.currentTime - this.recorder.startedAt : 0; }
   }
 
   // Port of precompute_fft_envelope.py: short-time energy per hop over a

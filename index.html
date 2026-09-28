@@ -18,7 +18,10 @@
     #app { grid-template-columns: minmax(300px, 1fr) minmax(360px, 1.1fr) minmax(240px, 0.8fr); align-items: start; }
     #centerCol { order: 0; }
   }
-  @media (max-width: 899px) { #centerCol { order: -1; } }
+  /* Stacked on a phone: radar, then songs (the first thing a new user has to
+     reach - it used to sit below all six cards and the spatial panel), then
+     the stem cards. */
+  @media (max-width: 899px) { #centerCol { order: -2; } #songCol { order: -1; } }
 
   /* min-width:0: a grid item's (or flex item's) default min-width is auto,
      which refuses to shrink below its content's min-content size - this is
@@ -26,9 +29,9 @@
      whole panel past the viewport at phone width despite nothing in it
      individually measuring wider than the screen. */
   .panel { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px; min-width: 0; }
-  .panel-title { color: #666; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 10px; }
+  .panel-title { color: #8a8a8a; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 10px; }
 
-  #status { color: #888; font-size: 0.8rem; text-align: center; margin-bottom: 8px; }
+  #status { color: #888; font-size: 0.8rem; text-align: center; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #status.connected { color: #0f8; }
   #val { font-size: 2rem; text-align: center; margin: 2px 0; font-variant-numeric: tabular-nums; }
   #stemLabel { color: #0f8; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; min-height: 1.2em; }
@@ -64,8 +67,8 @@
 
   .card-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; gap: 5px; }
   .stem-name { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.05em; }
-  .stem-az { font-size: 0.68rem; color: #888; font-variant-numeric: tabular-nums; min-width: 34px; }
-  .tog-btn { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #888;
+  .stem-az { font-size: 0.68rem; color: #999; font-variant-numeric: tabular-nums; min-width: 34px; }
+  .tog-btn { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #9a9a9a;
              border-radius: 6px; font-size: 0.58rem; font-weight: 800; letter-spacing: 0.04em;
              padding: 5px 8px; cursor: pointer; flex: 1; }
   .arm-btn.armed { background: rgba(0,255,136,0.18); border-color: #0f8; color: #0f8; }
@@ -81,12 +84,15 @@
      every stem needs visible at once the way mute/arm are. ---*/
   #spatialPanel { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); }
   #spatialPanel[hidden] { display: none; }
-  .spatial-title { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.05em; margin-bottom: 8px; }
+  .spatial-title { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.05em; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .close-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #aaa; border-radius: 7px;
+               width: 30px; height: 28px; font-size: 1.05rem; line-height: 1; cursor: pointer; flex: none; }
+  .close-btn:hover { color: #eee; background: rgba(255,255,255,0.12); }
   .seg-row { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .seg-btn { flex: 1; min-width: 64px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.14); color: #999;
              border-radius: 7px; font-size: 0.62rem; font-weight: 700; padding: 7px 4px; cursor: pointer; text-transform: uppercase; }
   .seg-btn.active { background: rgba(0,255,136,0.16); border-color: #0f8; color: #0f8; }
-  .field-label { font-size: 0.62rem; color: #777; text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 4px; }
+  .field-label { font-size: 0.62rem; color: #8c8c8c; text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 4px; }
   .weight-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-width: 0; }
   .weight-row label { font-size: 0.64rem; color: #999; width: 32px; flex: none; }
   /* min-width:0 matters here specifically: a range input's default intrinsic
@@ -99,18 +105,19 @@
 
   .preset-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .preset-row input[type=number] { width: 60px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 8px; font-size: 0.85rem; }
-  .preset-row button { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); color: #ccc; border-radius: 8px; padding: 9px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; cursor: pointer; }
+  .preset-row button { flex: 1; min-width: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); color: #ccc; border-radius: 8px; padding: 9px 4px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; cursor: pointer; }
   #presetSaveBtn { background: rgba(0,255,136,0.14); border-color: #0f8; color: #0f8; }
 
   /* --- radar --- */
   #radar { width: 100%; height: auto; display: block; max-width: 420px; margin: 0 auto; }
+  #radar.dragging, #radar.dragging .stem-dot { cursor: grabbing; }
   .grid-ring { fill: rgba(255,255,255,0.03); stroke: rgba(255,255,255,0.14); stroke-width: 1; }
   .grid-line { stroke: rgba(255,255,255,0.09); stroke-width: 1; }
-  .grid-text { fill: #555; font-size: 11px; font-weight: 700; text-anchor: middle; }
+  .grid-text { fill: #707070; font-size: 11px; font-weight: 700; text-anchor: middle; }
   .head { fill: rgba(255,255,255,0.22); }
-  .stem-label { font-size: 11px; font-weight: 700; }
-  .width-arc { fill: none; stroke-width: 5; stroke-linecap: round; }
-  .stem-dot { stroke: #111; stroke-width: 1.5; }
+  .stem-label { font-size: 11px; font-weight: 700; pointer-events: none; }
+  .width-arc { fill: none; stroke-width: 5; stroke-linecap: round; pointer-events: none; }
+  .stem-dot { stroke: #111; stroke-width: 1.5; cursor: grab; }
   .sel-ring { fill: none; stroke-width: 1.5; opacity: 0.9; }
 
   /* --- songs --- */
@@ -118,21 +125,39 @@
                font-size: 0.78rem; color: #bbb; border: 1px solid transparent; min-width: 0; }
   .song-item:hover { background: rgba(255,255,255,0.05); }
   .song-item.playing { background: rgba(0,255,136,0.14); border-color: #0f8; color: #0f8; font-weight: 700; }
-  .song-mark { width: 12px; flex: none; font-size: 0.7rem; }
+  /* Decode progress fills the row from the left (--p is set from app.js). */
+  .song-item.loading { background: linear-gradient(90deg, rgba(0,255,136,0.2) var(--p, 0%), rgba(0,255,136,0.06) var(--p, 0%)); }
+  .song-mark { width: 12px; flex: none; font-size: 0.7rem; display: flex; align-items: center; }
   /* min-width:0 is what makes the ellipsis work at all: a flex item defaults to
      min-width:auto, so a nowrap song title reported its full un-wrapped width
-     as a minimum and pushed every panel wider than the phone screen. */
-  .song-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .song-duration { flex: none; font-size: 0.66rem; color: #777; font-variant-numeric: tabular-nums; }
+     as a minimum and pushed every panel wider than the phone screen.
+     flex:1 lines the stem dots and durations up in columns. */
+  .song-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .song-duration { flex: none; font-size: 0.66rem; color: #8a8a8a; font-variant-numeric: tabular-nums; min-width: 30px; text-align: right; }
+  .song-item.playing .song-duration { color: #0f8; }
+  .song-remove { flex: none; background: none; border: none; color: #666; font-size: 1rem; line-height: 1; padding: 2px 6px; margin: -4px -4px -4px 0;
+                 border-radius: 6px; cursor: pointer; }
+  .song-remove:hover { color: #f77; background: rgba(255,80,80,0.12); }
+  .spin { width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-songs { color: #8a8a8a; font-size: 0.72rem; text-align: center; padding: 6px 0 2px; line-height: 1.5; }
 
   /* --- transport --- */
   #transportBar { display: flex; gap: 8px; justify-content: center; margin-bottom: 8px; }
   .tport-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #ddd;
-               border-radius: 8px; width: 44px; height: 40px; font-size: 1.1rem; cursor: pointer; }
-  .tport-btn-main { background: #0f8; color: #111; border-color: #0f8; width: 56px; font-size: 1.25rem; }
+               border-radius: 8px; width: 44px; height: 40px; cursor: pointer; padding: 0; }
+  /* SVG glyphs rather than the old U+23EE-style characters, which several
+     phones draw as colour emoji of all different sizes. */
+  .tport-btn svg { width: 20px; height: 20px; fill: currentColor; display: block; margin: auto; }
+  .tport-btn:hover:not(:disabled) { background: rgba(255,255,255,0.12); }
+  .tport-btn-main { background: #0f8; color: #111; border-color: #0f8; width: 56px; }
+  .tport-btn-main:hover:not(:disabled) { background: #3fffa4; }
+  .tport-btn-main svg { width: 24px; height: 24px; }
   #recordBtn { color: #f66; }
   #recordBtn.recording { background: #f33; color: #fff; border-color: #f33; animation: rec-pulse 1.2s infinite; }
   @keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  #recordStatus { color: #bbb; }
+  #recordStatus.live { color: #f77; font-variant-numeric: tabular-nums; }
   #recordStatus a { color: #0f8; }
   #progressRow { display: flex; align-items: center; gap: 8px; }
   #progressRow input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
@@ -151,7 +176,22 @@
   #sensorBtn.active { background: #0f8; }
   #calibrateBtn { background: #333; color: #eee; }
   input[type=range] { width: 100%; margin-top: 14px; accent-color: #0f8; }
-  .hint { color: #666; font-size: 0.66rem; text-align: center; margin-top: 6px; line-height: 1.4; }
+  .hint { color: #8a8a8a; font-size: 0.66rem; text-align: center; margin-top: 6px; line-height: 1.4; }
+  .hint.left { text-align: left; }
+  .hint[hidden] { display: none; }
+
+  button:disabled, input:disabled { opacity: 0.35; cursor: default; }
+  button:focus-visible, input:focus-visible, .knob:focus-visible, .fader:focus-visible,
+  .song-item:focus-visible, .drop-zone:focus-visible { outline: 2px solid #0f8; outline-offset: 2px; }
+  .knob:focus-visible { border-radius: 50%; }
+
+  /* Short, non-blocking messages (preset saved, no sensor found...) that used
+     to go to alert() or to a hint line in another column. */
+  #toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translate(-50%, 16px);
+           background: #222; color: #eee; border: 1px solid rgba(255,255,255,0.16); border-radius: 10px; padding: 10px 14px;
+           font-size: 0.78rem; line-height: 1.4; width: max-content; max-width: min(92vw, 440px); text-align: center; opacity: 0;
+           pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 20; box-shadow: 0 8px 28px rgba(0,0,0,0.55); }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
   @media (max-width: 470px) {
     .fader { width: 26px; }
@@ -185,11 +225,17 @@
   #startOverlay h1 { font-size: 1.4rem; margin: 0; letter-spacing: 0.04em; }
   #startOverlay p { color: #888; font-size: 0.8rem; max-width: 380px; line-height: 1.5; margin: 0; }
   #startBtn { background: #0f8; color: #111; border: none; border-radius: 12px; padding: 14px 34px; font-size: 1rem; font-weight: 800; cursor: pointer; }
-  .drop-zone { border: 1px dashed rgba(255,255,255,0.22); border-radius: 10px; padding: 14px 10px; text-align: center; color: #888;
-               font-size: 0.72rem; line-height: 1.5; cursor: pointer; margin-bottom: 10px; }
+  .drop-zone { border: 1px dashed rgba(255,255,255,0.22); border-radius: 10px; padding: 14px 10px; text-align: center; color: #8a8a8a;
+               font-size: 0.72rem; line-height: 1.5; cursor: pointer; margin-bottom: 10px; transition: border-color 0.15s, background 0.15s; }
+  .drop-zone:hover { border-color: rgba(255,255,255,0.4); background: rgba(255,255,255,0.03); }
   .drop-zone.over { border-color: #0f8; color: #0f8; background: rgba(0,255,136,0.06); }
+  .drop-zone.busy { cursor: progress; opacity: 0.7; }
+  .drop-zone.nudge { animation: nudge 0.5s 2; border-color: #0f8; }
+  @keyframes nudge { 50% { background: rgba(0,255,136,0.12); } }
   .drop-zone strong { color: #ccc; }
-  #fileInput { display: none; }
+  .linklike { background: none; border: none; color: #0f8; text-decoration: underline; cursor: pointer; font: inherit; padding: 2px 0 0; }
+  .linklike[hidden] { display: none; }
+  #fileInput, #folderInput, #presetFileInput { display: none; }
   .mode-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .mode-row .field-label { margin: 0; flex: none; }
   .mode-row .seg-row { margin: 0; flex: 1; }
@@ -221,7 +267,7 @@
     </div>
 
     <div id="spatialPanel" hidden>
-      <div class="spatial-title">SPATIAL &mdash; <span id="spatialStemName"></span></div>
+      <div class="spatial-title"><span>SPATIAL &mdash; <span id="spatialStemName"></span></span><button id="spatialCloseBtn" class="close-btn" title="Close" aria-label="Close spatial panel">&times;</button></div>
 
       <div class="field-label">Smoothing (final output, any source &mdash; left = smooth/gliding, right = instant/jittery)</div>
       <div class="weight-row"><label>Amount</label><input type="range" id="smoothingSlider" min="0.02" max="1" step="0.01"><output id="smoothingOut"></output></div>
@@ -274,6 +320,7 @@
         <button class="seg-btn" data-value="2">Link</button>
       </div>
       <div class="weight-row"><label>BPM</label><input type="number" id="spatialBpm" min="20" max="300" step="1"></div>
+      <div class="hint left" id="tempoHint" hidden></div>
 
       <div class="field-label">Base azimuth</div>
       <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
@@ -283,8 +330,10 @@
         <button id="presetSaveBtn">Save</button>
         <button id="presetLoadBtn">Load</button>
         <button id="presetExportBtn" title="Download all saved presets as JSON">Export</button>
+        <button id="presetImportBtn" title="Add presets from a JSON file exported earlier">Import</button>
       </div>
-      <div class="hint">Save/load applies to all 6 stems at once, stored in this browser under the current song's name.</div>
+      <input type="file" id="presetFileInput" accept=".json,application/json">
+      <div class="hint">Save/load covers all 6 stems at once (dial positions, levels, mutes, arming and motion), stored in this browser under the current song's name.</div>
     </div>
   </section>
 
@@ -308,8 +357,8 @@
       <g id="stemLayer"></g>
       <g id="handLayer"></g>
     </svg>
-    <input type="range" id="slider" min="-180" max="180" value="0" step="1">
-    <div class="hint">Rotates armed stems together. Dials set each stem individually.</div>
+    <input type="range" id="slider" min="-180" max="180" value="0" step="1" aria-label="Rotate armed stems">
+    <div class="hint">Rotates armed stems together. Drag a dot on the radar, or a dial, to place one stem.</div>
     <button id="sensorBtn" class="action">Enable Motion</button>
     <button id="calibrateBtn" class="action">Zero / Recenter</button>
     <button id="handBtn" class="action">Hand Tracking (camera)</button>
@@ -337,27 +386,29 @@
   <section class="panel" id="songCol">
     <div class="panel-title">Songs</div>
     <div id="transportBar">
-      <button id="prevBtn" class="tport-btn" title="Previous">&#9198;</button>
-      <button id="playPauseBtn" class="tport-btn tport-btn-main" title="Play/Pause">&#9654;</button>
-      <button id="stopBtn" class="tport-btn" title="Stop">&#9632;</button>
-      <button id="nextBtn" class="tport-btn" title="Next">&#9197;</button>
-      <button id="recordBtn" class="tport-btn" title="Record the live mix to a WAV file">&#9679;</button>
+      <button id="prevBtn" class="tport-btn" title="Previous (or back to the start)" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M6 5h2.2v14H6zM19 5.5v13L9.5 12z"/></svg></button>
+      <button id="playPauseBtn" class="tport-btn tport-btn-main" title="Play/Pause (Space)" aria-label="Play"></button>
+      <button id="stopBtn" class="tport-btn" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg></button>
+      <button id="nextBtn" class="tport-btn" title="Next" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M15.8 5H18v14h-2.2zM5 5.5v13l9.5-6.5z"/></svg></button>
+      <button id="recordBtn" class="tport-btn" title="Record the live mix to a WAV file" aria-label="Record"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg></button>
     </div>
     <div id="progressRow">
       <span id="posTime" class="time-label">0:00</span>
-      <input type="range" id="seekBar" min="0" max="1" step="0.1" value="0">
+      <input type="range" id="seekBar" min="0" max="1" step="0.1" value="0" aria-label="Position">
       <span id="durTime" class="time-label">0:00</span>
     </div>
     <div id="volumeRow">
       <span class="field-label" id="masterVolLabel">Master 40%</span>
-      <input type="range" id="masterVolSlider" min="0" max="1" step="0.01" value="0.4">
+      <input type="range" id="masterVolSlider" min="0" max="1" step="0.01" value="0.4" aria-label="Master volume">
     </div>
     <div class="hint" id="recordStatus" hidden></div>
-    <div class="drop-zone" id="dropZone">
-      <strong>Add songs</strong> &mdash; tap or drop files here<br>
+    <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Add songs">
+      <strong>Add songs</strong> &mdash; tap or drop files or folders here<br>
       12-channel show WAV, or separate stems named vocals / drums / bass / guitar / piano / other
+      <br><button type="button" class="linklike" id="folderBtn" hidden>or choose a folder of stems</button>
     </div>
-    <input type="file" id="fileInput" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,audio/*">
+    <input type="file" id="fileInput" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aif,.aiff,audio/*">
+    <input type="file" id="folderInput" webkitdirectory multiple>
     <div id="songList"></div>
     <div class="hint" id="songHint">&nbsp;</div>
     <div class="mode-row">
@@ -371,6 +422,8 @@
   </section>
 
 </div>
+
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script src="js/wav.js"></script>
 <script src="js/engine.js"></script>

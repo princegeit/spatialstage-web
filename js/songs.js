@@ -15,8 +15,9 @@
 //      are stem pairs in CHANNEL_ORDER (2i = left, 2i+1 = right).
 //   2. Separate stem files, matched to slots by a stem name appearing in
 //      the filename (Demucs' vocals.wav / drums.wav ..., or "Song - drums.wav",
-//      or a "melody"/"keys" export from any online splitter). Files that
-//      share a folder or the same non-stem prefix are grouped into one song.
+//      or a "melody"/"keys" export from any online splitter). Files in one
+//      folder with the same non-stem name are grouped into one song; bare
+//      vocals.wav / drums.wav ... take their folder's name (drop the folder).
 //      Slots with no file stay silent - ROADMAP item 0's bring-your-own-
 //      stems path, done in the browser instead of a script.
 // Anything else (a plain stereo song, no stem name) loads as a single
@@ -32,24 +33,41 @@
     other: ['other', 'others', 'rest', 'instrumental', 'music', 'accompaniment'],
   };
 
-  function stemOf(filename) {
-    const base = filename.toLowerCase().replace(/\.[^.]+$/, '');
-    // Split on anything that is not a letter, so "drums" matches in
-    // "Song_drums", "song - drums", "drums" but "bassoon" does not.
-    const words = base.split(/[^a-z]+/).filter(Boolean);
-    for (const stem of STEMS) for (const a of ALIASES[stem]) if (words.includes(a)) return stem;
-    return null;
-  }
+  const ALIAS_TO_STEM = {};
+  for (const s of STEMS) for (const a of ALIASES[s]) ALIAS_TO_STEM[a] = s;
 
-  // The song name a stem file belongs to: its folder when picked via a
-  // directory, otherwise the filename with the stem word stripped.
-  function groupKeyOf(file, stem) {
-    const rel = file.webkitRelativePath || '';
-    if (rel.includes('/')) return rel.split('/').slice(-2, -1)[0];
-    let base = file.name.replace(/\.[^.]+$/, '');
-    for (const a of ALIASES[stem]) base = base.replace(new RegExp('(^|[^a-z])' + a + '($|[^a-z])', 'i'), '$1$2');
-    base = base.replace(/[\s\-_.]+$/g, '').replace(/^[\s\-_.]+/g, '').trim();
-    return base || 'stems';
+  // The stem a filename names, and where that word sits in it. Words are
+  // runs of letters, so "drums" matches in "Song_drums", "song - drums",
+  // "drums2" but "bassoon" does not. The LAST stem word wins: splitters put
+  // the stem at the end ("Other Track - vocals", "1_Song_(Vocals)"), and a
+  // stem word earlier on is usually part of the song title.
+  function stemMatch(filename) {
+    const base = filename.replace(/\.[^.]+$/, '');
+    const re = /[a-z]+/gi;
+    let m, hit = null;
+    while ((m = re.exec(base))) {
+      const stem = ALIAS_TO_STEM[m[0].toLowerCase()];
+      if (stem) hit = { stem, index: m.index, length: m[0].length };
+    }
+    return hit;
+  }
+  // Where a file came from: set by the folder-drop walker in app.js, or by
+  // a directory picker.
+  const pathOf = (file) => file.ssPath || file.webkitRelativePath || '';
+  const folderOf = (file) => { const parts = pathOf(file).split('/'); return parts.length > 1 ? parts[parts.length - 2] : ''; };
+
+  // The song a stem file belongs to: the filename with its stem word cut
+  // out ("Song - drums" -> "Song"), or, when that leaves nothing (Demucs'
+  // bare vocals.wav / drums.wav ...), the folder it came from. Files from
+  // different folders never merge, even when their names match.
+  function groupOf(file, match) {
+    const base = file.name.replace(/\.[^.]+$/, '');
+    let name = base.slice(0, match.index) + base.slice(match.index + match.length);
+    name = name.replace(/\(\s*\)|\[\s*\]|\{\s*\}/g, '')      // "Song (Vocals)" -> "Song ()" -> "Song"
+      .replace(/^[\s\-_.,]+|[\s\-_.,]+$/g, '')
+      .replace(/\s{2,}/g, ' ');
+    const folder = folderOf(file);
+    return { key: pathOf(file).split('/').slice(0, -1).join('/') + '|' + name.toLowerCase(), name: name || folder };
   }
 
   // Reads just the RIFF header to learn channel count and duration without
@@ -72,14 +90,23 @@
     } catch (e) { return null; }
   }
 
+  // Files the decoder cannot use at all - cover art, cue sheets, a
+  // Demucs log - are skipped rather than listed as unplayable songs.
+  const AUDIO_EXT = /\.(wav|wave|flac|mp3|m4a|aac|mp4|ogg|oga|opus|webm|aif|aiff|caf)$/i;
+  const isAudio = (f) => AUDIO_EXT.test(f.name) || (f.type || '').startsWith('audio/');
+
   async function scanFiles(files) {
     const songs = [];
     const groups = {};
     for (const f of files) {
-      const stem = stemOf(f.name);
-      if (stem) {
-        const key = groupKeyOf(f, stem);
-        (groups[key] = groups[key] || { name: key, files: {} }).files[stem] = f;
+      if (!isAudio(f)) continue;
+      const match = stemMatch(f.name);
+      if (match) {
+        const g = groupOf(f, match);
+        const grp = groups[g.key] = groups[g.key] || { name: g.name, files: {} };
+        // Two files claiming one slot (vocals.wav and vocals.mp3): keep the
+        // first rather than silently swapping in whichever came last.
+        if (!grp.files[match.stem]) grp.files[match.stem] = f;
         continue;
       }
       const info = await probeWav(f);
@@ -94,17 +121,20 @@
     }
     for (const key in groups) {
       const g = groups[key];
+      // Stems from different files can differ in length; the song lasts as
+      // long as the longest one.
       let duration = null;
-      for (const s of STEMS) if (g.files[s]) { const info = await probeWav(g.files[s]); if (info) { duration = info.duration; break; } }
-      songs.push({ name: g.name, kind: 'stems', files: g.files, duration, slots: STEMS.map((s) => !!g.files[s]) });
+      for (const s of STEMS) if (g.files[s]) { const info = await probeWav(g.files[s]); if (info) duration = Math.max(duration || 0, info.duration); }
+      songs.push({ name: g.name || 'Untitled stems', kind: 'stems', files: g.files, duration, slots: STEMS.map((s) => !!g.files[s]) });
     }
-    return songs;
+    // Pickers and drops hand files over in no particular order.
+    return songs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   }
 
-  async function decodeFile(file, engine) {
+  async function decodeFile(file, engine, onFraction) {
     const buf = await file.arrayBuffer();
     try {
-      return SSWav.parseWav(buf); // { sampleRate, channels }
+      return await SSWav.parseWav(buf, onFraction); // { sampleRate, channels }
     } catch (e) {
       // Compressed (mp3/m4a/flac/ogg) or a WAV flavour the parser skips:
       // the browser's decoder handles it (and resamples to the context).
@@ -136,22 +166,27 @@
     });
   }
 
+  // onProgress(fraction 0..1, label) - fraction covers the whole song, so a
+  // six-file stem set reports one steady bar rather than six resets.
   async function decodeSong(desc, engine, onProgress) {
+    const report = (x, label) => { if (onProgress) onProgress(Math.max(0, Math.min(1, x)), label); };
     const stems = {};
     if (desc.kind === 'stems') {
       let rate = null;
-      for (const s of STEMS) {
-        const f = desc.files[s];
-        if (!f) continue;
-        onProgress && onProgress('decoding ' + f.name + '...');
-        const d = await decodeFile(f, engine);
+      const todo = STEMS.filter((s) => desc.files[s]);
+      for (let k = 0; k < todo.length; k++) {
+        const s = todo[k], f = desc.files[s];
+        report(k / todo.length, f.name);
+        const d = await decodeFile(f, engine, (x) => report((k + x) / todo.length, f.name));
         if (rate === null) rate = d.sampleRate;
         stems[s] = matchRate(pairFrom(d.channels), d.sampleRate, rate);
       }
+      report(1, desc.name);
       return { name: desc.name, sampleRate: rate, stems };
     }
-    onProgress && onProgress('decoding ' + desc.file.name + '...');
-    const d = await decodeFile(desc.file, engine);
+    report(0, desc.file.name);
+    const d = await decodeFile(desc.file, engine, (x) => report(x, desc.file.name));
+    report(1, desc.file.name);
     if (d.channels.length >= 12) {
       STEMS.forEach((s, i) => { stems[s] = [d.channels[2 * i], d.channels[2 * i + 1]]; });
     } else if (d.channels.length === 6) {

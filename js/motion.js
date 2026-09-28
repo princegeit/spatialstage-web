@@ -141,7 +141,7 @@
         } else if (p.fftMode < 2.5) {
           this.fftAz = this.bandSmooth.tick(this._bandLevel(nodes.bandAnalyser));
         } else {
-          const env = engine.song && engine.song.envelopes[srcStem];
+          const env = engine.envelopeOf(srcStem);
           if (env && engine.song.duration > 0) {
             const idx = Math.min(env.length - 1, Math.max(0, Math.floor(engine.position() / engine.song.duration * env.length)));
             this.fftAz = Math.min(1, Math.max(0, env[idx])) * 360 - 180;
@@ -170,7 +170,10 @@
         this.out = wrap180(smoothed + p.base);
         this.effective = wrap180(geometryBase + this.out);
       } else {
-        this.finalSmooth.snap(0);
+        // Snap to the offset that puts the stem at 0 deg once base and
+        // geometry are added back on, so a re-armed stem glides out from
+        // centre instead of jumping to its base first.
+        this.finalSmooth.snap(wrap180(-geometryBase - p.base));
         this.out = wrap180(-geometryBase);
         this.effective = 0;
       }
@@ -209,9 +212,11 @@
     _onsetTick(analyser) {
       if (!this._buf) this._buf = new Float32Array(analyser.fftSize);
       analyser.getFloatTimeDomainData(this._buf);
-      const b = this._buf;
+      // Newest 512 samples (the window is oldest-first); the head is ~35 ms
+      // stale at 44.1 kHz, which is most of a 25 ms tick late on every hit.
+      const b = this._buf, from = b.length - 512;
       let e = 0;
-      for (let i = 0; i < 512; i++) e += b[i] * b[i];
+      for (let i = from; i < b.length; i++) e += b[i] * b[i];
       const rms = Math.sqrt(e / 512);
       const now = performance.now();
       const avg = this.onsetAvg;
@@ -239,7 +244,12 @@
     constructor(engine) {
       this.engine = engine;
       this.stems = {};
-      engine.stems.forEach((s, i) => { this.stems[s] = new StemMotion(s, i); });
+      engine.stems.forEach((s, i) => {
+        this.stems[s] = new StemMotion(s, i);
+        // Until the first tick, show each stem at its home position rather
+        // than piled up at 0 deg.
+        this.stems[s].effective = engine.geometry[s].azimuth;
+      });
       this.timer = null; this.lastAt = 0;
       this.onTick = null;
     }

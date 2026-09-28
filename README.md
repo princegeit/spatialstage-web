@@ -26,15 +26,25 @@ changing anything here, run `publish.bat` to push the update.
 ## Use it
 
 1. Tap **Start** (browsers require a tap before audio can play).
-2. **Add songs** - tap the box or drop files on it:
+2. **Add songs** - tap the box, drop files or whole folders anywhere on the
+   page, or use *choose a folder of stems* (desktop browsers):
    - a 12-channel show WAV from `../show_ready/` (the pipeline's output), or
    - separate stem files from any splitter, named with the stem in the
-     filename (`vocals.wav`, `Song - drums.wav`, `keys.mp3`...). Files that
-     share a folder or a name prefix become one song; missing stems stay
-     silent. Any un-split song loads as a single movable source.
-3. Press play, drag the dials or move the rotate slider. On a phone, tap
-   **Enable Motion** and turn around: the armed stems stay put in the room
-   while you turn.
+     filename (`vocals.wav`, `Song - drums.wav`, `keys.mp3`...). Files in
+     one folder with the same name apart from the stem word become one
+     song; Demucs-style bare `vocals.wav`/`drums.wav` take their folder's
+     name (so drop or choose the folder, not the files). Missing stems
+     stay silent. Any un-split song loads as a single movable source.
+   Double-click a song name to rename it (its preset follows); **×** removes
+   it from the list.
+3. Press play (or **Space**), then place stems: drag or tap a dial, or drag
+   a stem's dot on the radar (with a mouse, dragging empty space inside the
+   ring turns every armed stem). The rotate slider turns the armed group.
+   On a phone, tap **Enable Motion** and turn around: the armed stems stay
+   put in the room while you turn. Unarmed stems park at centre.
+   Dials and faders also take the keyboard: arrows nudge (Shift for bigger
+   steps), Home centres a dial or resets a fader; double-click a fader for
+   100%.
 4. **SPATIAL** on a stem card opens the motion panel: FFT-driven motion,
    preset orbits, tempo sync, blend weights, smoothing - the same controls
    and the same math as the Pd rig's `pd/spatial` abstractions.
@@ -51,8 +61,10 @@ changing anything here, run `publish.bat` to push the update.
    rear cameras or a laptop pointed at the audience.
 6. **●** records exactly what you hear to a WAV download.
 
-Presets save in the browser under the current song's name (Export downloads
-them all as JSON).
+Presets save in the browser under the current song's name: dial positions,
+levels, mutes, arming and every motion setting. Export downloads them all
+as JSON; Import merges such a file back in (on another browser or device,
+say).
 
 ## What matches the Pd rig, what differs
 
@@ -64,11 +76,11 @@ them all as JSON).
 | Unarmed stem | Parks at its base azimuth | Parks at centre (0°, straight ahead) |
 | FFT pitch mode | `sigmund~` | Autocorrelation pitch tracker (same 36..84 MIDI mapping, median-of-3) |
 | FFT onset mode | `bonk~` | Energy-jump onset detector (same velocity→azimuth formula) |
-| FFT precalc mode | Table from `precompute_fft_envelope.py` | Computed automatically when a song loads (same envelope) |
+| FFT precalc mode | Table from `precompute_fft_envelope.py` | Computed the first time a stem uses it (same envelope) |
 | Tempo: MIDI clock | `midirealtimein` | Web MIDI (Chrome/Edge only) |
 | Tempo: Link | stub | stub |
-| Songs | Streamed from disk by `readsf~` | Decoded fully into memory when selected (~2 MB/s of song for 12 channels; fine on a laptop, keep phones to one song at a time) |
-| Presets | Per song index, files on disk | Per song name, browser localStorage + JSON export |
+| Songs | Streamed from disk by `readsf~` | Decoded fully into memory when selected, with progress shown (~2 MB/s of song for 12 channels; the previous song is freed first, so only one is ever in memory) |
+| Presets | Per song index, files on disk | Per song name, browser localStorage + JSON export/import; also stores dial positions |
 | Recording | `writesf~` + ffmpeg MP3 | WAV download |
 | Phone | Remote control over LAN | The phone *is* the player (open the page on it) |
 | Hand tracking | – | Camera + MediaPipe Hand Landmarker 0.10.35 (loaded from CDN on first use, ~19 MB cached) |
