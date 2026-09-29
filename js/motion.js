@@ -13,6 +13,7 @@
 // than re-derived, so a saved preset means the same thing on both rigs.
 (function () {
   const TICK_MS = 25;
+  const SMOOTH_MIN = 0.02, LEVEL_LO = 50, LEVEL_HI = 90;   // bridge/server.js
   const DEG = Math.PI / 180;
   const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
 
@@ -78,7 +79,11 @@
         fftMode: 0, presetMode: 0, presetRate: 0.05, blendMode: 0,
         blendWeights2: [0, 0], blendWeights3: [0.333, 0.333, 0.334],
         tempoSource: 0, tempoBpm: 120, base: 0, fftSrc: index, smoothing: 1,
+        // 0 fixed; 1 louder = snappier, 2 louder = smoother - the bridge's
+        // updateLevelSmoothing, done here per tick from the stem's own level.
+        smoothingMode: 0,
       };
+      this.smoothingNow = 1;   // the k actually in use, for the panel's hint
       this.phone = 0;          // degrees, relative to the stem's base (the UI's "rotate")
       this.armed = true;
       this.presetPhase = 0;    // phasor~ 0..1
@@ -97,7 +102,23 @@
     set(param, value) {
       if (Array.isArray(value)) this.params[param] = value.slice();
       else this.params[param] = value;
-      if (param === 'smoothing') this.finalSmooth.k = Math.max(0.01, Math.min(1, value));
+      if (param === 'smoothing' || param === 'smoothingMode') {
+        this.smoothingNow = Math.max(0.01, Math.min(1, this.params.smoothing));
+        this.finalSmooth.k = this.smoothingNow;
+      }
+    }
+
+    // bridge/server.js's updateLevelSmoothing: the smoothing amount follows
+    // the stem's own level between SMOOTH_MIN and the Amount slider.
+    // mode 1: louder = snappier; mode 2: louder = smoother. Levels in env~
+    // dB (100 = full scale); LEVEL_LO..LEVEL_HI is quiet..loud.
+    _levelSmoothing(engine) {
+      const p = this.params;
+      let t = Math.max(0, Math.min(1, (engine.envDb(this.stem) - LEVEL_LO) / (LEVEL_HI - LEVEL_LO)));
+      if (p.smoothingMode === 2) t = 1 - t;
+      const max = Math.max(SMOOTH_MIN, p.smoothing);
+      this.smoothingNow = Math.round((SMOOTH_MIN + t * (max - SMOOTH_MIN)) * 1000) / 1000;
+      this.finalSmooth.k = this.smoothingNow;
     }
 
     // Does anything downstream of the FFT branch actually reach the
@@ -161,6 +182,7 @@
       if (!isFinite(blended)) blended = this.phone;
 
       // --- final smoothing, then the arm gate ---
+      if (p.smoothingMode === 1 || p.smoothingMode === 2) { if (this.tickCount % 2 === 0) this._levelSmoothing(engine); }
       // An unarmed stem parks at true centre (0 deg, straight ahead) rather
       // than at its base azimuth as the Pd rig does: on this rig "not armed"
       // reads as "out of the picture", and the smoother is reset so re-arming

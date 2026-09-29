@@ -1,7 +1,7 @@
-// Audio engine: the Web Audio port of pd/binaural_pan_live_v1.pd's signal
-// path. Everything here is per-stem graph plumbing and transport; azimuth
-// *decisions* (phone/fft/preset blending) live in motion.js and arrive
-// through setAzimuth().
+// Audio engine: the Web Audio port of pd/spatialstage_live.pd's signal path
+// (pd/generate_live_patch.py). Everything here is per-stem graph plumbing,
+// output routing and transport; azimuth *decisions* (phone/fft/preset
+// blending) live in motion.js and arrive through setAzimuth().
 //
 // Panner math is a 1:1 port of pd/stem_spatializer.pd, wrapped the way
 // pd/stem_spatializer_stereo.pd wraps it: each stem's own L and R channels
@@ -12,17 +12,27 @@
 //   inter-aural delay     dL = 5 + 0.3*s ms, dR = 5 - 0.3*s ms
 // The 5 ms base delay is Pd's delread~ minimum-latency offset; only the
 // +-0.3 ms difference is audible. An optional 'hrtf' mode swaps that for a
-// PannerNode with panningModel 'HRTF' - a real head-related response the
-// Pd rig never had live (it only used the KEMAR set offline, in
-// pipeline/binaural_render.py).
+// PannerNode with panningModel 'HRTF' - the browser's own head-related
+// response (the Pd rig plays the same one, captured from the browser by
+// pd/spatial/capture_browser_hrtf.js, in pd/spatial/hrtf-mix.pd).
+//
+// Output, as in the live patch:
+//   stereo mix -> master volume -> L/R swap ─┐
+//                                            ├─ crossfade -> speakers 1-2
+//   quad mix   -> master volume ─────────────┘            -> speakers 3-4 (quad only)
+// The quad mix is pd/quad_pan.pd per chain: four speakers at -45, 45,
+// -135, 135 degrees, gain cos(min(distance, 90)) each. Recording taps the
+// stereo mix after the swap - what the headphones hear - as writesf~ does.
 (function () {
   const BASE_DELAY_S = 0.005;
   const ITD_S = 0.0003;
   const RAMP_TAU = 0.012;   // setTargetAtTime time constant; ~40 ms to settle, no clicks at 40 Hz updates
   const BRANCH_GAIN = 0.5;  // stereo build's per-branch gain, matches level with the mono build
   const ENV_FRAME = 2048, ENV_HOP = 512, ENV_POINTS = 1000; // precompute_fft_envelope.py
+  const SPEAKERS = [-45, 45, -135, 135];   // quad_pan.pd: FL, FR, RL, RR
 
   const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
+  const quadGain = (angle, speaker) => Math.cos(Math.min(Math.abs(wrap180(angle - speaker)), 90) * Math.PI / 180);
 
   class Engine {
     constructor(stems, geometry) {
@@ -31,6 +41,8 @@
       this.ctx = null;
       this.nodes = {};                     // per-stem graph
       this.panMode = 'pd';                 // 'pd' | 'hrtf'
+      this.lrSwap = false;
+      this.quad = false;
       this.volume = {}; this.muted = {};
       for (const s of stems) { this.volume[s] = 1; this.muted[s] = false; }
       this.masterVolume = 0.4;
@@ -55,12 +67,49 @@
       try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
       this.ctx = ctx;
-      this.master = ctx.createGain();
-      this.master.gain.value = this.masterVolume;
-      this.master.connect(ctx.destination);
+      this._buildOutput();
       for (const s of this.stems) this.nodes[s] = this._buildStem(s);
       if (ctx.state !== 'running') await ctx.resume();
       return ctx;
+    }
+
+    _buildOutput() {
+      const ctx = this.ctx;
+      const g = (v, channels) => {
+        const n = ctx.createGain(); n.gain.value = v;
+        if (channels) { n.channelCount = channels; n.channelCountMode = 'explicit'; n.channelInterpretation = 'discrete'; }
+        return n;
+      };
+      // Master volume, once per mix (the patch's two [*~] after each bus).
+      this.master = g(this.masterVolume, 2);
+      this.qmaster = g(this.masterVolume, 4);
+
+      // L/R swap: L' = L(1-s) + Rs, R' = R(1-s) + Ls.
+      const split = ctx.createChannelSplitter(2);
+      this.master.connect(split);
+      this.post = ctx.createChannelMerger(2);
+      this.swap = { LL: g(1), RR: g(1), RL: g(0), LR: g(0) };
+      split.connect(this.swap.LL, 0); this.swap.LL.connect(this.post, 0, 0);
+      split.connect(this.swap.RL, 1); this.swap.RL.connect(this.post, 0, 0);
+      split.connect(this.swap.RR, 1); this.swap.RR.connect(this.post, 0, 1);
+      split.connect(this.swap.LR, 0); this.swap.LR.connect(this.post, 0, 1);
+
+      // Stereo vs quad: speakers 1-2 crossfade from the stereo mix to the
+      // quad front pair, 3-4 carry the quad rear pair only in quad mode.
+      this.final = ctx.createChannelMerger(4);
+      const postSplit = ctx.createChannelSplitter(2);
+      this.post.connect(postSplit);
+      this.stereoGate = [g(1), g(1)];
+      this.stereoGate.forEach((n, k) => { postSplit.connect(n, k); n.connect(this.final, 0, k); });
+      const qSplit = ctx.createChannelSplitter(4);
+      this.qmaster.connect(qSplit);
+      this.quadGate = [g(0), g(0), g(0), g(0)];
+      this.quadGate.forEach((n, k) => { qSplit.connect(n, k); n.connect(this.final, 0, k); });
+      // 'discrete' so a stereo device keeps speakers 1-2 as they are rather
+      // than folding 3-4 into them at half level.
+      const dest = ctx.destination;
+      try { dest.channelInterpretation = 'discrete'; } catch (e) {}
+      this.final.connect(dest);
     }
 
     _buildStem(stem) {
@@ -71,11 +120,17 @@
       // Level: BRANCH_GAIN * volume * (muted ? 0 : 1), ramped like Pd's line~ 20 ms.
       n.out.gain.value = BRANCH_GAIN;
       n.out.connect(this.master);
+      // The quad mix of this stem, same level.
+      n.qmerge = ctx.createChannelMerger(4);
+      n.qout = ctx.createGain();
+      n.qout.channelCount = 4; n.qout.channelCountMode = 'explicit'; n.qout.channelInterpretation = 'discrete';
+      n.qout.gain.value = BRANCH_GAIN;
+      n.qmerge.connect(n.qout); n.qout.connect(this.qmaster);
 
       // Analysis taps for motion.js's fft-source port: a mono sum of the
       // stem (Pd downmixes each stem before fft-source too), one wideband
-      // time-domain analyser for pitch/onset, one bandpassed analyser for
-      // the band-energy mode (bp~ 1000 4 -> env~).
+      // time-domain analyser for pitch/onset/level, one bandpassed analyser
+      // for the band-energy mode (bp~ 1000 4 -> env~).
       n.mono = ctx.createGain(); n.mono.channelCount = 1; n.mono.channelCountMode = 'explicit';
       n.input.connect(n.mono);
       n.analyser = ctx.createAnalyser(); n.analyser.fftSize = 2048; n.analyser.smoothingTimeConstant = 0;
@@ -106,6 +161,8 @@
         ch.pdIn.gain.value = this.panMode === 'pd' ? 1 : 0;
         ch.hrtfIn.gain.value = this.panMode === 'hrtf' ? 1 : 0;
         n.split.connect(ch.pdIn, c); n.split.connect(ch.hrtfIn, c);
+        // --- quad_pan.pd: one gain per speaker ---
+        ch.quad = SPEAKERS.map((_, k) => { const q = ctx.createGain(); n.split.connect(q, c); q.connect(n.qmerge, 0, k); return q; });
         n.chains.push(ch);
       }
       this.nodes[stem] = n;
@@ -122,6 +179,40 @@
         ch.pdIn.gain.setTargetAtTime(mode === 'pd' ? 1 : 0, t, 0.02);
         ch.hrtfIn.gain.setTargetAtTime(mode === 'hrtf' ? 1 : 0, t, 0.02);
       }
+    }
+
+    // L/R swap (the rig's address 30), ramped like its 20 ms line~.
+    setLrSwap(on) {
+      this.lrSwap = !!on;
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime, s = this.lrSwap ? 1 : 0;
+      this.swap.LL.gain.setTargetAtTime(1 - s, t, 0.007); this.swap.RR.gain.setTargetAtTime(1 - s, t, 0.007);
+      this.swap.RL.gain.setTargetAtTime(s, t, 0.007); this.swap.LR.gain.setTargetAtTime(s, t, 0.007);
+    }
+
+    // How many speakers the output device offers (after ensure()).
+    get maxChannels() { return this.ctx ? this.ctx.destination.maxChannelCount : 2; }
+    get quadSupported() { return this.maxChannels >= 4; }
+
+    // Four-speaker output (the rig's address 31). False if the device the
+    // browser is playing to has fewer than four channels - browsers only
+    // expose what the OS reports for the default output.
+    setQuad(on) {
+      if (on && this.ctx && !this.quadSupported) return false;
+      this.quad = !!on;
+      if (!this.ctx) return true;
+      const dest = this.ctx.destination;
+      if (this.quad) {
+        try { dest.channelCount = 4; } catch (e) { this.quad = false; return false; }
+        for (const s of this.stems) this._applyQuad(s, this.azimuth[s], true);
+      }
+      const t = this.ctx.currentTime, q = this.quad ? 1 : 0;
+      this.stereoGate.forEach((n) => n.gain.setTargetAtTime(1 - q, t, 0.007));
+      this.quadGate.forEach((n) => n.gain.setTargetAtTime(q, t, 0.007));
+      // Back to two channels once the ramp is over, so a stereo device is
+      // not left driving four.
+      if (!this.quad) setTimeout(() => { if (!this.quad) { try { dest.channelCount = 2; } catch (e) {} } }, 100);
+      return true;
     }
 
     // Absolute azimuth in degrees, 0 = front, +90 = right, +-180 = behind.
@@ -154,11 +245,25 @@
         if (ch.panner.positionX) { set(ch.panner.positionX, px); set(ch.panner.positionZ, pz); }
         else ch.panner.setPosition(px, 0, pz);
       }
+      if (this.quad || immediate) this._applyQuad(stem, deg, immediate);
     }
 
-    // 0..1 meter value for the UI: RMS of the last 512 samples of the stem's
-    // own (pre-fader) audio on a -60..0 dB scale.
-    levelOf(stem) {
+    _applyQuad(stem, deg, immediate) {
+      const n = this.nodes[stem];
+      const w = this.geometry[stem].width || 0;
+      const t = this.ctx.currentTime;
+      for (let c = 0; c < 2; c++) {
+        const angle = deg + (c === 0 ? -w / 2 : w / 2);
+        n.chains[c].quad.forEach((q, k) => {
+          const v = quadGain(angle, SPEAKERS[k]);
+          if (immediate) q.gain.value = v; else q.gain.setTargetAtTime(v, t, RAMP_TAU);
+        });
+      }
+    }
+
+    // RMS of the newest 512 samples of the stem's own (pre-fader) mono mix,
+    // as env~ reports it: dB with 100 = full scale, 0 for silence.
+    envDb(stem) {
       const n = this.nodes[stem];
       if (!n || !this.playing) return 0;
       if (!this._meterBuf) this._meterBuf = new Float32Array(n.analyser.fftSize);
@@ -167,8 +272,14 @@
       const b = this._meterBuf, from = b.length - 512;
       let e = 0;
       for (let i = from; i < b.length; i++) e += b[i] * b[i];
-      const db = 20 * Math.log10(Math.sqrt(e / 512) + 1e-9);
-      const v = (db + 60) / 60;
+      return Math.max(0, 100 + 20 * Math.log10(Math.sqrt(e / 512) + 1e-9));
+    }
+
+    // 0..1 meter value for the UI: envDb on a -60..0 dB scale, times the
+    // stem's fader and mute.
+    levelOf(stem) {
+      if (!this.nodes[stem] || !this.playing) return 0;
+      const v = (this.envDb(stem) - 40) / 60;
       return Math.max(0, Math.min(1, v)) * (this.muted[stem] ? 0 : this.volume[stem]);
     }
 
@@ -176,12 +287,15 @@
     setMuted(stem, m) { this.muted[stem] = !!m; if (this.ctx) this._applyLevel(stem, false); }
     _applyLevel(stem, immediate) {
       const g = BRANCH_GAIN * (this.muted[stem] ? 0 : this.volume[stem]);
-      const p = this.nodes[stem].out.gain;
-      if (immediate) p.value = g; else p.setTargetAtTime(g, this.ctx.currentTime, 0.02);
+      for (const p of [this.nodes[stem].out.gain, this.nodes[stem].qout.gain]) {
+        if (immediate) p.value = g; else p.setTargetAtTime(g, this.ctx.currentTime, 0.02);
+      }
     }
     setMasterVolume(v) {
       this.masterVolume = v;
-      if (this.ctx) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
+      if (!this.ctx) return;
+      this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
+      this.qmaster.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
     }
 
     /* ---------------- song loading ---------------- */
@@ -201,12 +315,12 @@
         buffers[s] = buf;
         duration = Math.max(duration, frames / song.sampleRate);
         // Drop the decoded copy as soon as it is in an AudioBuffer, so a long
-        // 12-channel song does not sit in memory twice while the rest copy.
+        // multichannel song does not sit in memory twice while the rest copy.
         delete song.stems[s];
       }
       // Envelopes are filled in by envelopeOf() the first time precalc mode
-      // asks for one - most songs never use it, and computing all six up front
-      // cost a noticeable pause on every load.
+      // asks for one - most songs never use it, and computing them all up
+      // front cost a noticeable pause on every load.
       this.song = { name: song.name, buffers, duration, envelopes: {} };
       this.offset = 0;
       this._changed();
@@ -220,6 +334,9 @@
       this.song = null;
       this._changed();
     }
+
+    // Stems the loaded song has audio for.
+    hasStem(stem) { return !!(this.song && this.song.buffers[stem]); }
 
     envelopeOf(stem) {
       const song = this.song;
@@ -309,8 +426,8 @@
 
     /* ---------------- recording (writesf~ port) ---------------- */
 
-    // Taps the master bus - exactly what the headphones hear, motion and
-    // all - and hands back a 16-bit stereo WAV blob on stop.
+    // Taps the stereo mix after the L/R swap - exactly what the headphones
+    // hear, motion and all.
     startRecording() {
       if (this.recorder || !this.ctx) return;
       const ctx = this.ctx;
@@ -322,7 +439,7 @@
         chunksL.push(new Float32Array(e.inputBuffer.getChannelData(0)));
         chunksR.push(new Float32Array(e.inputBuffer.getChannelData(1)));
       };
-      this.master.connect(sp);
+      this.post.connect(sp);
       // A ScriptProcessor only runs when connected to the destination; a
       // zero gain keeps it out of the audible mix.
       const sink = ctx.createGain(); sink.gain.value = 0;
@@ -331,17 +448,19 @@
       this._changed();
     }
 
+    // The take as { channels: [L, R], sampleRate } - the page encodes it
+    // (WAV here, MP3 in js/mp3.js).
     stopRecording() {
       const r = this.recorder;
       if (!r) return null;
-      this.master.disconnect(r.sp); r.sp.disconnect(); r.sink.disconnect();
+      this.post.disconnect(r.sp); r.sp.disconnect(); r.sink.disconnect();
       this.recorder = null;
       const total = r.chunksL.reduce((n, c) => n + c.length, 0);
       const L = new Float32Array(total), R = new Float32Array(total);
       let p = 0;
       for (let i = 0; i < r.chunksL.length; i++) { L.set(r.chunksL[i], p); R.set(r.chunksR[i], p); p += r.chunksL[i].length; }
       this._changed();
-      return new Blob([SSWav.encodeWav([L, R], this.ctx.sampleRate)], { type: 'audio/wav' });
+      return { channels: [L, R], sampleRate: this.ctx.sampleRate };
     }
 
     get isRecording() { return !!this.recorder; }

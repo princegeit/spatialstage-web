@@ -1,27 +1,18 @@
 // UI: bridge/public/index.html's control surface, with every send({...})
 // to the bridge replaced by a direct call into engine.js / motion.js. The
 // page IS the player now - no WebSocket, no OSC, no Pd. Layout, dials,
-// radar and the spatial panel are unchanged so it feels the same on a phone.
-const ALL_STEMS = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'];
-const STEM_COLOR = {
-  vocals: '#00ff88', drums: '#ffcc33', bass: '#44aaff',
-  guitar: '#ff66aa', piano: '#ad6bff', other: '#00dddd',
-};
-// Base azimuth and stereo width per stem, from the stem_spatializer_stereo
-// creation args in pd/binaural_pan_live_v1.pd (what /stems used to serve).
-const GEOMETRY = {
-  vocals: { azimuth: -15, width: 37 }, drums: { azimuth: -45, width: 1 },
-  bass: { azimuth: 75, width: 0 }, guitar: { azimuth: -75, width: 2 },
-  piano: { azimuth: 45, width: 8 }, other: { azimuth: 15, width: 50 },
-};
-const ICONS = {
-  vocals: '<rect x="9" y="3" width="6" height="10" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><path d="M12 17v4"/><path d="M9 21h6"/>',
-  drums:  '<ellipse cx="12" cy="10" rx="8" ry="3"/><path d="M4 10v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5"/><path d="M6 3.5l3.5 4M18 3.5l-3.5 4"/>',
-  bass:   '<path d="M4 9.5v5h3l4.5 3.5v-12L7 9.5H4z"/><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/>',
-  guitar: '<circle cx="8.5" cy="15.5" r="5"/><circle cx="8.5" cy="15.5" r="1.5"/><path d="M12 12l6.5-6.5"/><path d="M17 4l3 3"/>',
-  piano:  '<rect x="3" y="6.5" width="18" height="11" rx="1"/><path d="M7.5 6.5v6.5M12 6.5v6.5M16.5 6.5v6.5"/>',
-  other:  '<path d="M6 20v-8M12 20V4M18 20v-5"/><circle cx="6" cy="9" r="2"/><circle cx="12" cy="17" r="2"/><circle cx="18" cy="12" r="2"/>',
-};
+// radar and panels follow the rig's page so it feels the same on a phone,
+// and the state model is the rig's too:
+//   - A dial, the radar, CENTER, the Position slider or a grabbing hand
+//     PLACE a stem: the spot becomes its reference point (stem-control's
+//     base) and its phone offset restarts from 0, so phone, fft and preset
+//     motion carry on around where it was put (the bridge's handlePlace).
+//   - The rotate slider, the phone and group gestures ROTATE: they add to
+//     each armed stem's phone offset (the bridge's phoneRotate).
+//   - Stem setups: numbered presets plus setups attached to songs; a song
+//     loads its own setup, or preset 0 (js/setups.js, the bridge's model).
+const { STEMS: ALL_STEMS, DRUM_PARTS, GEOMETRY, COLOR: STEM_COLOR, ICONS, LEFTOVER } = SSStems;
+const IS_PART = new Set(DRUM_PARTS);
 
 const $ = (id) => document.getElementById(id);
 const status = $('status'), val = $('val'), stemLabel = $('stemLabel');
@@ -39,11 +30,10 @@ const radar = $('radar'), toastEl = $('toast');
 const engine = new SSEngine(ALL_STEMS, GEOMETRY);
 const motion = new SSMotion(engine);
 
-// Absolute azimuth per stem as the dial shows it: base + phone rotate. The
-// radar additionally shows where the stem really is once fft/preset motion
-// and smoothing are folded in (motion.stems[s].effective).
-let base = {}, widthDeg = {}, azim = {}, volume = {};
-for (const s of ALL_STEMS) { base[s] = GEOMETRY[s].azimuth; widthDeg[s] = GEOMETRY[s].width; azim[s] = base[s]; volume[s] = 1; }
+// base: each stem's layout azimuth (the patch's). azim: what a dial shows
+// while a finger is on it. phone: the rotation offset per stem.
+const base = {}, widthDeg = {}, azim = {}, volume = {}, phone = {};
+for (const s of ALL_STEMS) { base[s] = GEOMETRY[s].azimuth; widthDeg[s] = GEOMETRY[s].width; azim[s] = base[s]; volume[s] = 1; phone[s] = 0; }
 let mutedStems = new Set();
 let selectedStems = new Set(ALL_STEMS);
 let songs = [], songIndex = -1;
@@ -52,15 +42,15 @@ let loading = null;      // { song, pct, autoplay } while one is decoding
 let seeking = false, seekDirty = false;
 const spatial = {};
 for (const s of ALL_STEMS) spatial[s] = motion.stems[s].params;
-let activeSpatialStem = null;
+let activeSpatialStem = null, activeLedStem = null;
 let lastSliderValue = 0;
-let zeroAlpha = 0, lastRawAlpha = 0;
 let dragging = null;
 const cards = {};
 
 const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
-const sendStem = (s) => motion.setPhone(s, Math.round(wrap180(azim[s] - base[s])));
 const buzz = (p) => { if (navigator.vibrate) navigator.vibrate(p); };
+const pref = (k, dflt) => { try { const v = localStorage.getItem('spatialstage.' + k); return v === null ? dflt : JSON.parse(v); } catch (e) { return dflt; } };
+const setPref = (k, v) => { try { localStorage.setItem('spatialstage.' + k, JSON.stringify(v)); } catch (e) {} };
 
 let toastTimer = null;
 function toast(msg, ms) {
@@ -77,6 +67,7 @@ startBtn.addEventListener('click', async () => {
     await engine.ensure();
   } catch (e) { alert('Could not start audio: ' + e.message); return; }
   motion.start();
+  applyOutputPrefs();
   startOverlay.hidden = true;
   status.classList.add('connected');
   refreshStatus();
@@ -98,12 +89,13 @@ function buildCards() {
   for (const stem of ALL_STEMS) {
     const c = STEM_COLOR[stem];
     const card = document.createElement('div');
-    card.className = 'stem-card';
+    card.className = 'stem-card' + (IS_PART.has(stem) ? ' part' : '');
     card.style.color = c;
     card.innerHTML =
       '<div class="card-head">' +
         '<svg viewBox="0 0 24 24" stroke="' + c + '">' + ICONS[stem] + '</svg>' +
         '<span class="stem-name">' + stem.toUpperCase() + '</span>' +
+        '<span class="stem-note"></span>' +
       '</div>' +
       '<div class="level"><div class="level-fill"></div></div>' +
       '<div class="card-row">' +
@@ -129,6 +121,9 @@ function buildCards() {
       '<div class="card-row2">' +
         '<button class="tog-btn center-btn">CENTER</button>' +
         '<button class="tog-btn spatial-btn">SPATIAL</button>' +
+      '</div>' +
+      '<div class="card-row2">' +
+        '<button class="tog-btn led-btn" hidden><span class="swatch"></span>LED</button>' +
       '</div>';
     stemGrid.appendChild(card);
     cards[stem] = {
@@ -143,15 +138,32 @@ function buildCards() {
       arm: card.querySelector('.arm-btn'),
       mute: card.querySelector('.mute-btn'),
       spatial: card.querySelector('.spatial-btn'),
+      led: card.querySelector('.led-btn'),
       level: card.querySelector('.level-fill'),
+      note: card.querySelector('.stem-note'),
     };
     cards[stem].mute.addEventListener('click', () => setMuted(stem, !mutedStems.has(stem)));
     cards[stem].arm.addEventListener('click', () => setArmed(stem, !selectedStems.has(stem)));
     card.querySelector('.center-btn').addEventListener('click', () => centerStem(stem));
     cards[stem].spatial.addEventListener('click', () => openSpatialPanel(stem));
+    cards[stem].led.addEventListener('click', () => openLedPanel(stem));
     bindKnob(card.querySelector('.knob'), stem);
     bindFader(card.querySelector('.fader'), stem);
   }
+}
+
+// Does the loaded song have drum-kit parts? Their cards (and radar dots)
+// are only shown when it does - twelve cards for a song with six stems is
+// a screen of dead controls on a phone.
+const songHasParts = () => DRUM_PARTS.some((p) => engine.hasStem(p));
+const stemShown = (stem) => !IS_PART.has(stem) || songHasParts();
+
+// Why a stem has no sound right now, or '' if it has.
+function stemNote(stem) {
+  if (!engine.song) return '';
+  if (stem === 'drums' && songHasParts()) return 'rest';
+  if (!engine.hasStem(stem)) return 'silent';
+  return '';
 }
 
 // Dial pointer + degree readout show where the stem really is (fft/preset
@@ -180,6 +192,8 @@ function refreshMeters() {
 
 function refreshCards() {
   refreshPointers();
+  stemGrid.classList.toggle('no-parts', !songHasParts());
+  const ledOn = led.configured;
   for (const stem of ALL_STEMS) {
     const k = cards[stem];
     if (!k) continue;
@@ -195,16 +209,40 @@ function refreshCards() {
     k.mute.classList.toggle('muted', m);
     k.mute.setAttribute('aria-pressed', m);
     k.card.classList.toggle('muted', m);
+    const note = stemNote(stem);
+    k.note.textContent = note;
+    k.note.title = note === 'rest' ? 'Whatever the drum parts did not catch' : note === 'silent' ? 'This song has no audio for this stem' : '';
+    k.card.classList.toggle('absent', note === 'silent');
     k.spatial.classList.toggle('open', stem === activeSpatialStem);
+    const look = led.cfg.stems[stem];
+    k.led.hidden = !ledOn;
+    k.led.classList.toggle('open', stem === activeLedStem);
+    k.led.style.color = look.on ? look.color : '';
+    k.led.querySelector('.swatch').style.background = look.on ? look.color : '#333';
   }
 }
 
 // One place for "put this stem at this angle", shared by dial, radar,
-// keyboard and hand tracking.
+// keyboard, CENTER, the Position slider and hand tracking: the angle
+// becomes the stem's reference point and its phone offset restarts.
 function placeStem(stem, deg) {
   azim[stem] = wrap180(deg);
-  sendStem(stem);
+  motion.setParam(stem, 'base', Math.round(wrap180(azim[stem] - base[stem])));
+  phone[stem] = 0;
+  motion.setPhone(stem, 0);
+  markModified();
   refreshCards(); requestRadar();
+  if (stem === activeSpatialStem) refreshSpatialPanel();
+}
+
+// Rotation (slider, phone, group drags): adds to each armed stem's phone
+// offset. Not a setup change - the rig does not count it as one either.
+function rotateArmedBy(d) {
+  if (!d) return;
+  for (const stem of selectedStems) {
+    phone[stem] = wrap180(phone[stem] + d);
+    motion.setPhone(stem, Math.round(phone[stem]));
+  }
 }
 
 // Placing an unarmed stem does nothing audible (it stays parked at centre),
@@ -250,13 +288,14 @@ function bindKnob(el, stem) {
     else if (ev.key === 'Home') { ev.preventDefault(); centerStem(stem); return; }
     else return;
     ev.preventDefault();
-    placeStem(stem, (azim[stem] || 0) + d);
+    placeStem(stem, motion.stems[stem].effective + d);
   });
 }
 
 function setArmed(stem, on, quiet) {
   if (on) selectedStems.add(stem); else selectedStems.delete(stem);
   motion.setArmed(stem, on);
+  markModified();
   updateStemLabel(); refreshCards(); requestRadar();
   if (!quiet) buzz(15);
 }
@@ -269,6 +308,7 @@ function centerStem(stem) {
 function setVolume(stem, v) {
   volume[stem] = Math.round(Math.max(0, Math.min(1, v)) * 100) / 100;
   engine.setVolume(stem, volume[stem]);
+  markModified();
   refreshCards();
 }
 
@@ -302,6 +342,7 @@ function bindFader(el, stem) {
 function setMuted(stem, m, quiet) {
   if (m) mutedStems.add(stem); else mutedStems.delete(stem);
   engine.setMuted(stem, m);
+  markModified();
   refreshCards(); requestRadar();
   if (!quiet) buzz(15);
 }
@@ -311,11 +352,21 @@ function setMuted(stem, m, quiet) {
 const spatialPanel = $('spatialPanel'), spatialStemName = $('spatialStemName');
 const blendModeRow = $('blendModeRow'), blendTwoRow = $('blendTwoRow'), blendThreeRow = $('blendThreeRow');
 const fftModeRow = $('fftModeRow'), fftSrcRow = $('fftSrcRow'), presetModeRow = $('presetModeRow'), tempoSourceRow = $('tempoSourceRow');
+const smoothingModeRow = $('smoothingModeRow'), smoothingLabel = $('smoothingLabel'), smoothingHint = $('smoothingHint');
+const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), tempoBlock = $('tempoBlock');
 const ts1El = $('ts1'), ts2El = $('ts2'), w1El = $('w1'), w2El = $('w2'), w3El = $('w3');
 const presetRateEl = $('presetRate'), smoothingSliderEl = $('smoothingSlider');
 const spatialBpmEl = $('spatialBpm'), spatialBaseEl = $('spatialBase');
 
-function sendSpatial(stem, param, value) { motion.setParam(stem, param, value); }
+ALL_STEMS.forEach((s, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'seg-btn';
+  btn.dataset.value = i;
+  btn.textContent = s.charAt(0).toUpperCase() + s.slice(1);
+  fftSrcRow.appendChild(btn);
+});
+
+function sendSpatial(stem, param, value) { motion.setParam(stem, param, value); markModified(); }
 
 function setSegActive(row, value) {
   row.querySelectorAll('.seg-btn').forEach(btn => {
@@ -327,22 +378,63 @@ function bindSegRow(row, onPick) {
     btn.addEventListener('click', () => onPick(isNaN(Number(btn.dataset.value)) ? btn.dataset.value : Number(btn.dataset.value)));
   });
 }
-const segParam = (row, param) => bindSegRow(row, (v) => {
-  if (!activeSpatialStem) return;
-  sendSpatial(activeSpatialStem, param, v);
+
+// How much the FFT and preset sources actually reach the output (the
+// rig's fftWeight/presetWeight): two-stage is
+// final = blend(blend(phone, fft, ts1), preset, ts2); three-way is plain
+// weights. A mode button is only lit while its source is really in the mix.
+const fftWeight = (st) => st.blendMode === 1 ? st.blendWeights3[1] : st.blendWeights2[0] * (1 - st.blendWeights2[1]);
+const presetWeight = (st) => st.blendMode === 1 ? st.blendWeights3[2] : st.blendWeights2[1];
+const W_ON = 0.005;
+
+// Off -> that source's weight to 0. A mode while the source is off -> pick
+// it AND give the source a half share, since choosing a motion is asking
+// to hear it.
+function setSourceOn(stem, which, on) {
+  const st = spatial[stem];
+  if (st.blendMode === 1) {
+    const w = st.blendWeights3.slice();
+    const i = which === 'fft' ? 1 : 2;
+    w[i] = on ? 0.5 : 0;
+    if (!on && w[0] + w[1] + w[2] <= 0) w[0] = 1;   // never leave nothing at all
+    sendSpatial(stem, 'blendWeights3', w);
+  } else {
+    const w = st.blendWeights2.slice();
+    if (which === 'fft') {
+      w[0] = on ? 0.5 : 0;
+      if (on && w[1] > 0.5) w[1] = 0.5;   // a full preset share would still drown it out
+    } else {
+      w[1] = on ? 0.5 : 0;
+    }
+    sendSpatial(stem, 'blendWeights2', w);
+  }
+}
+
+bindSegRow(blendModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'blendMode', v); refreshSpatialPanel(); } });
+bindSegRow(fftModeRow, (v) => {
+  const stem = activeSpatialStem;
+  if (!stem) return;
+  if (v < 0) setSourceOn(stem, 'fft', false);
+  else { sendSpatial(stem, 'fftMode', v); if (fftWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'fft', true); }
   refreshSpatialPanel();
 });
-segParam(blendModeRow, 'blendMode');
-segParam(fftModeRow, 'fftMode');
-segParam(fftSrcRow, 'fftSrc');
-segParam(presetModeRow, 'presetMode');
-segParam(tempoSourceRow, 'tempoSource');
+bindSegRow(fftSrcRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'fftSrc', v); refreshSpatialPanel(); } });
+bindSegRow(presetModeRow, (v) => {
+  const stem = activeSpatialStem;
+  if (!stem) return;
+  if (v < 0) setSourceOn(stem, 'preset', false);
+  else { sendSpatial(stem, 'presetMode', v); if (presetWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'preset', true); }
+  refreshSpatialPanel();
+});
+bindSegRow(smoothingModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'smoothingMode', v); refreshSpatialPanel(); } });
+bindSegRow(tempoSourceRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'tempoSource', v); refreshSpatialPanel(); } });
 
 function wireWeightSlider(el, out, apply) {
   el.addEventListener('input', () => {
     if (!activeSpatialStem) return;
     apply(activeSpatialStem, Number(el.value));
     out.textContent = Number(el.value).toFixed(2);
+    refreshSpatialRows();   // a weight dragged to or from 0 turns a source off or on
   });
 }
 const weightAt = (param, i) => (stem, v) => {
@@ -354,8 +446,15 @@ wireWeightSlider(w1El, $('w1Out'), weightAt('blendWeights3', 0));
 wireWeightSlider(w2El, $('w2Out'), weightAt('blendWeights3', 1));
 wireWeightSlider(w3El, $('w3Out'), weightAt('blendWeights3', 2));
 wireWeightSlider(presetRateEl, $('presetRateOut'), (stem, v) => sendSpatial(stem, 'presetRate', v));
-wireWeightSlider(spatialBaseEl, $('spatialBaseOut'), (stem, v) => sendSpatial(stem, 'base', v));
 wireWeightSlider(smoothingSliderEl, $('smoothingOut'), (stem, v) => sendSpatial(stem, 'smoothing', v));
+// Shown as the stem's actual direction (layout azimuth + reference offset),
+// the same number the dial and radar show, rather than the raw offset.
+spatialBaseEl.addEventListener('input', () => {
+  const stem = activeSpatialStem;
+  if (!stem) return;
+  $('spatialBaseOut').textContent = Math.round(Number(spatialBaseEl.value)) + '°';
+  placeStem(stem, Number(spatialBaseEl.value));
+});
 spatialBpmEl.addEventListener('change', () => {
   if (!activeSpatialStem) return;
   const v = Math.max(20, Math.min(300, Number(spatialBpmEl.value) || 120));
@@ -367,10 +466,11 @@ function openSpatialPanel(stem) {
   activeSpatialStem = (activeSpatialStem === stem) ? null : stem;
   spatialPanel.hidden = activeSpatialStem === null;
   if (activeSpatialStem) {
+    if (activeLedStem) openLedPanel(activeLedStem);   // one panel at a time
     spatialStemName.textContent = stem.toUpperCase();
     spatialStemName.style.color = STEM_COLOR[stem];
     refreshSpatialPanel();
-    // The panel opens under all six cards; on a phone that is a screen or
+    // The panel opens under all the cards; on a phone that is a screen or
     // more below the button that opened it.
     const top = spatialPanel.getBoundingClientRect().top;
     if (top > window.innerHeight - 120) spatialPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -386,16 +486,38 @@ $('spatialCloseBtn').addEventListener('click', () => {
   if (r.top < 0 || r.bottom > window.innerHeight) cards[stem].card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 });
 
+// Which choices are lit and which sub-rows are shown. Only what is actually
+// shaping the stem's motion is highlighted: an FFT or preset source with no
+// weight in the blend shows "Off", and the rows that only matter for it
+// (audio source, rate, tempo) are hidden until it is on.
+function refreshSpatialRows() {
+  if (!activeSpatialStem) return;
+  const st = spatial[activeSpatialStem];
+  const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
+  setSegActive(blendModeRow, st.blendMode);
+  setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
+  setSegActive(fftSrcRow, st.fftSrc);
+  setSegActive(presetModeRow, presetOn ? st.presetMode : -1);
+  setSegActive(tempoSourceRow, st.tempoSource);
+  const levelMode = st.smoothingMode === 1 || st.smoothingMode === 2;
+  setSegActive(smoothingModeRow, st.smoothingMode || 0);
+  smoothingLabel.textContent = levelMode ? 'Max' : 'Amount';
+  smoothingHint.hidden = !levelMode;
+  if (levelMode) {
+    smoothingHint.textContent = (st.smoothingMode === 1 ? 'Quiet = smooth glide, loud = up to Max.' : 'Loud = smooth glide, quiet = up to Max.') +
+      ' Now ' + motion.stems[activeSpatialStem].smoothingNow.toFixed(2) + '.';
+  }
+  fftSrcBlock.hidden = !fftOn;
+  presetRateBlock.hidden = !presetOn;
+  tempoBlock.hidden = !(presetOn && st.presetMode === 2);
+  blendTwoRow.hidden = st.blendMode !== 0;
+  blendThreeRow.hidden = st.blendMode !== 1;
+}
+
 function refreshSpatialPanel() {
   if (!activeSpatialStem) return;
   const st = spatial[activeSpatialStem];
-  setSegActive(blendModeRow, st.blendMode);
-  setSegActive(fftModeRow, st.fftMode);
-  setSegActive(fftSrcRow, st.fftSrc);
-  setSegActive(presetModeRow, st.presetMode);
-  setSegActive(tempoSourceRow, st.tempoSource);
-  blendTwoRow.hidden = st.blendMode !== 0;
-  blendThreeRow.hidden = st.blendMode !== 1;
+  refreshSpatialRows();
   ts1El.value = st.blendWeights2[0]; $('ts1Out').textContent = st.blendWeights2[0].toFixed(2);
   ts2El.value = st.blendWeights2[1]; $('ts2Out').textContent = st.blendWeights2[1].toFixed(2);
   w1El.value = st.blendWeights3[0]; $('w1Out').textContent = st.blendWeights3[0].toFixed(2);
@@ -403,14 +525,14 @@ function refreshSpatialPanel() {
   w3El.value = st.blendWeights3[2]; $('w3Out').textContent = st.blendWeights3[2].toFixed(2);
   presetRateEl.value = st.presetRate; $('presetRateOut').textContent = st.presetRate.toFixed(2);
   spatialBpmEl.value = st.tempoBpm;
-  spatialBaseEl.value = st.base; $('spatialBaseOut').textContent = Math.round(st.base) + '°';
+  const pos = Math.round(wrap180(base[activeSpatialStem] + st.base));
+  if (document.activeElement !== spatialBaseEl) spatialBaseEl.value = pos;
+  $('spatialBaseOut').textContent = pos + '°';
   smoothingSliderEl.value = st.smoothing; $('smoothingOut').textContent = st.smoothing.toFixed(2);
   refreshTempoHint();
 }
 
 // Under the tempo row: what the Tempo-Sync motion is actually following.
-// Previously MIDI status went to the song column's hint line, and choosing
-// Link silently fell back to manual BPM.
 const tempoHint = $('tempoHint');
 function refreshTempoHint() {
   const st = activeSpatialStem && spatial[activeSpatialStem];
@@ -427,59 +549,196 @@ function refreshTempoHint() {
   tempoHint.hidden = !t;
 }
 
-/* ---------------- presets: localStorage keyed by song name ---------------- */
+/* ---------------- stem setups: presets + song-attached (js/setups.js) ---------------- */
 
-const PRESET_KEY = 'spatialstage.presets.v1';
-function readPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}'); } catch (e) { return {}; } }
-function writePresets(p) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(p)); return true; } catch (e) { alert('Could not save preset: ' + e.message); return false; } }
-function presetName() { return songIndex >= 0 && songs[songIndex] ? songs[songIndex].name : '_default'; }
-const presetLabel = () => presetName() === '_default' ? 'no song (default)' : '"' + presetName() + '"';
+const presetSel = $('presetSel'), presetNameEl = $('presetName'), presetUpdateBtn = $('presetUpdateBtn');
+const attachBtn = $('attachBtn'), detachBtn = $('detachBtn'), presetHint = $('presetHint');
+const PRESET_HINT = 'Songs with nothing attached load preset 0. Saved: positions, spatial settings, smoothing, volume, mute, arm. Export opens on the Pd rig too.';
+let setupStore = SSSetups.load();
+// What the stems are set from: { source: 'preset', n } or { source: 'song',
+// song }, plus modified once anything was touched since (the bridge's `loaded`).
+let loaded = { source: 'preset', n: 0, modified: false };
 
-$('presetSaveBtn').addEventListener('click', () => {
-  const all = readPresets();
-  // azim (where each dial was put) is new in this format; older presets
-  // without it still load, they just leave the dials where they are.
-  all[presetName()] = { spatial: motion.snapshot(), volume: { ...volume }, muted: [...mutedStems], armed: [...selectedStems], azim: { ...azim } };
-  if (writePresets(all)) toast('Saved preset for ' + presetLabel());
+const presetLabel = (p) => 'P' + p.n + (p.name ? ' · ' + p.name : '');
+const currentSongName = () => (songs[songIndex] ? songs[songIndex].name : null);
+const hasAttached = (name) => !!(name && setupStore.songs[name]);
+
+function storeSetups() {
+  const err = SSSetups.save(setupStore);
+  if (err) alert('Could not save in this browser: ' + err);
+  return !err;
+}
+
+function markModified() {
+  if (loaded.modified) return;
+  loaded.modified = true;
+  renderPresetPanel();
+}
+
+// The current state as a setup. The phone offset is folded into the
+// reference point, so the setup brings each stem back to where it sits now.
+function captureSetup(name) {
+  const setup = { name: name || '', spatial: motion.snapshot(), stems: {} };
+  for (const s of ALL_STEMS) {
+    setup.spatial[s].base = Math.round(wrap180(spatial[s].base + phone[s]));
+    setup.stems[s] = { volume: volume[s], muted: mutedStems.has(s), armed: selectedStems.has(s) };
+  }
+  return setup;
+}
+
+function applySetup(setup) {
+  setup = SSSetups.normalise(setup);
+  motion.restore(setup.spatial);
+  for (const s of ALL_STEMS) {
+    phone[s] = 0; motion.setPhone(s, 0);
+    azim[s] = wrap180(base[s] + setup.spatial[s].base);
+    const st = setup.stems[s];
+    volume[s] = st.volume; engine.setVolume(s, st.volume);
+    if (st.muted) mutedStems.add(s); else mutedStems.delete(s);
+    engine.setMuted(s, st.muted);
+    if (st.armed) selectedStems.add(s); else selectedStems.delete(s);
+    motion.setArmed(s, st.armed);
+  }
+  updateStemLabel(); refreshCards(); refreshSpatialPanel(); requestRadar();
+}
+
+function applyPreset(n) {
+  let setup = SSSetups.readPreset(setupStore, n);
+  if (!setup) { n = 0; setup = SSSetups.readPreset(setupStore, 0); }
+  applySetup(setup);
+  loaded = { source: 'preset', n, modified: false };
+  renderPresetPanel();
+}
+
+// A song's own attached setup if it has one, otherwise preset 0.
+function applySongSetup(name) {
+  if (hasAttached(name)) {
+    applySetup(setupStore.songs[name]);
+    loaded = { source: 'song', song: name, modified: false };
+    renderPresetPanel();
+  } else applyPreset(0);
+}
+
+// The selector always shows what the stems are set from: a library preset,
+// "Custom (attached)" for a song's own setup, or "Custom (unsaved)" once
+// anything has been changed since loading.
+function renderPresetPanel() {
+  const cur = currentSongName();
+  const custom = loaded.modified || loaded.source === 'song';
+  if (document.activeElement !== presetSel) {
+    presetSel.textContent = '';
+    if (custom) {
+      const opt = document.createElement('option');
+      opt.value = 'custom'; opt.disabled = true;
+      opt.textContent = loaded.modified ? 'Custom (unsaved changes)' : 'Custom (attached to this song)';
+      presetSel.appendChild(opt);
+    }
+    for (const p of SSSetups.listPresets(setupStore)) {
+      const opt = document.createElement('option');
+      opt.value = p.n; opt.textContent = presetLabel(p);
+      presetSel.appendChild(opt);
+    }
+    presetSel.value = custom ? 'custom' : String(loaded.n);
+  }
+  presetSel.classList.toggle('custom', custom);
+  const fromPreset = loaded.source === 'preset';
+  presetUpdateBtn.disabled = !fromPreset;
+  presetUpdateBtn.textContent = fromPreset ? 'Update P' + loaded.n : 'Update';
+  attachBtn.disabled = !cur;
+  attachBtn.textContent = hasAttached(cur) ? 'Re-attach' : 'Attach to song';
+  detachBtn.hidden = !hasAttached(cur);
+  if (!flashPresetHint.t) presetHint.textContent = cur ? PRESET_HINT : 'Load a song to attach a setup to it. ' + PRESET_HINT;
+}
+
+function flashPresetHint(text) {
+  presetHint.textContent = text;
+  clearTimeout(flashPresetHint.t);
+  flashPresetHint.t = setTimeout(() => { flashPresetHint.t = null; renderPresetPanel(); }, 3000);
+}
+
+const unsavedOk = () => !loaded.modified || confirm('Discard the unsaved changes to the stems?');
+
+presetSel.addEventListener('change', () => {
+  const n = Number(presetSel.value);
+  presetSel.blur();
+  if (!unsavedOk()) { renderPresetPanel(); return; }
+  applyPreset(n);
+  flashPresetHint('Loaded preset ' + n + '.');
+});
+$('presetNewBtn').addEventListener('click', () => {
+  const name = presetNameEl.value.trim();
+  if (!name) { presetNameEl.focus(); flashPresetHint('Type a name for the new preset first.'); return; }
+  const n = SSSetups.nextPresetNumber(setupStore);
+  setupStore.presets[n] = captureSetup(name);
+  if (!storeSetups()) return;
+  presetNameEl.value = '';
+  loaded = { source: 'preset', n, modified: false };
+  renderPresetPanel();
+  flashPresetHint('Saved as new preset P' + n + ' "' + name + '".');
   buzz(25);
 });
-$('presetLoadBtn').addEventListener('click', () => {
-  const p = readPresets()[presetName()];
-  if (!p) { toast('No preset saved for ' + presetLabel() + ' yet'); return; }
-  applyPreset(p);
-  toast('Loaded preset for ' + presetLabel());
+presetUpdateBtn.addEventListener('click', () => {
+  if (loaded.source !== 'preset') return;
+  const n = loaded.n;
+  if (n === 0 && !confirm('Overwrite preset 0? Every song without an attached setup loads preset 0.')) return;
+  const old = SSSetups.listPresets(setupStore).find((p) => p.n === n);
+  const name = presetNameEl.value.trim() || (old ? old.name : '');
+  setupStore.presets[n] = captureSetup(name);
+  if (!storeSetups()) return;
+  presetNameEl.value = '';
+  loaded = { source: 'preset', n, modified: false };
+  renderPresetPanel();
+  flashPresetHint('Updated preset ' + n + '.');
+  buzz(25);
+});
+attachBtn.addEventListener('click', () => {
+  const cur = currentSongName();
+  if (!cur) return;
+  if (hasAttached(cur) && !confirm('Replace the setup already attached to this song?')) return;
+  setupStore.songs[cur] = captureSetup('');
+  if (!storeSetups()) return;
+  loaded = { source: 'song', song: cur, modified: false };
+  renderPresetPanel(); renderSongs();
+  flashPresetHint('Attached to "' + cur + '".');
+  buzz(25);
+});
+detachBtn.addEventListener('click', () => {
+  const cur = currentSongName();
+  if (!cur || !confirm('Detach the setup from this song? It will load preset 0 next time.')) return;
+  delete setupStore.songs[cur];
+  storeSetups();
+  if (loaded.source === 'song') loaded.modified = true;
+  renderPresetPanel(); renderSongs();
+  flashPresetHint('Detached - this song loads preset 0 from now on.');
+});
+$('presetRevertBtn').addEventListener('click', () => {
+  if (!unsavedOk()) return;
+  if (loaded.source === 'song' && hasAttached(loaded.song)) applySongSetup(loaded.song);
+  else applyPreset(loaded.n || 0);
+  flashPresetHint('Reverted.');
   buzz([20, 20, 20]);
 });
 $('presetExportBtn').addEventListener('click', () => {
-  const all = readPresets();
-  if (!Object.keys(all).length) { toast('No presets saved yet - Save one first'); return; }
-  download(new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' }), 'spatialstage-presets.json');
+  const file = SSSetups.exportFile(setupStore);
+  if (!file.presets.length && !Object.keys(file.songs).length) { flashPresetHint('Nothing saved yet - save a preset or attach a setup first.'); return; }
+  download(new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }), 'spatialstage-setups.json');
 });
-// Export's other half: merges a file from Export (this or another browser)
-// into this browser's presets; same-named songs take the imported version.
+// Merges a file from Export - this page's, another browser's, or the Pd
+// rig's - into this browser's setups; same number / same song replaces.
 const presetFileInput = $('presetFileInput');
 $('presetImportBtn').addEventListener('click', () => presetFileInput.click());
 presetFileInput.addEventListener('change', async () => {
   const f = presetFileInput.files[0];
   presetFileInput.value = '';
   if (!f) return;
-  let incoming;
-  try { incoming = JSON.parse(await f.text()); } catch (e) { alert('That file is not valid JSON: ' + e.message); return; }
-  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) { alert('That is not a SpatialStage preset export.'); return; }
-  const names = Object.keys(incoming).filter(k => incoming[k] && typeof incoming[k] === 'object' && (incoming[k].spatial || incoming[k].volume));
-  if (!names.length) { alert('No presets found in that file.'); return; }
-  const all = readPresets();
-  for (const k of names) all[k] = incoming[k];
-  if (writePresets(all)) toast('Imported ' + names.length + (names.length === 1 ? ' preset' : ' presets'));
+  let parsed;
+  try { parsed = SSSetups.parseFile(JSON.parse(await f.text())); }
+  catch (e) { alert(e instanceof SyntaxError ? 'That file is not valid JSON: ' + e.message : e.message); return; }
+  const n = SSSetups.merge(setupStore, parsed);
+  if (!storeSetups()) return;
+  renderPresetPanel(); renderSongs();
+  toast('Imported ' + n.presets + (n.presets === 1 ? ' preset' : ' presets') + ' and ' + n.songs + (n.songs === 1 ? ' song setup' : ' song setups'));
 });
-function applyPreset(p) {
-  if (p.spatial) motion.restore(p.spatial);
-  if (p.azim) for (const s of ALL_STEMS) if (typeof p.azim[s] === 'number' && isFinite(p.azim[s])) { azim[s] = wrap180(p.azim[s]); sendStem(s); }
-  if (p.volume) for (const s of ALL_STEMS) if (typeof p.volume[s] === 'number') { volume[s] = p.volume[s]; engine.setVolume(s, volume[s]); }
-  if (Array.isArray(p.muted)) for (const s of ALL_STEMS) { const m = p.muted.includes(s); if (m) mutedStems.add(s); else mutedStems.delete(s); engine.setMuted(s, m); }
-  if (Array.isArray(p.armed)) for (const s of ALL_STEMS) { const a = p.armed.includes(s); if (a) selectedStems.add(s); else selectedStems.delete(s); motion.setArmed(s, a); }
-  updateStemLabel(); refreshCards(); refreshSpatialPanel(); requestRadar();
-}
 
 /* ---------------- radar ---------------- */
 
@@ -501,8 +760,8 @@ function requestRadar() {
   requestAnimationFrame(() => { radarPending = false; drawRadar(); refreshPointers(); refreshMeters(); });
 }
 
-// Stem labels, laid out so that stems sharing a spot (all six park at 0 deg
-// after Arm None) do not print on top of each other. Each label gets its
+// Stem labels, laid out so that stems sharing a spot (every stem parks at 0
+// deg after Arm None) do not print on top of each other. Each label gets its
 // natural spot beside its dot; labels whose boxes collide are merged into a
 // group, drawn as a vertical list at the sides of the ring or as one
 // coloured line (two if it would not fit) at the front and back, where
@@ -565,8 +824,7 @@ function layoutGroup(g) {
 }
 
 // Start with every stem on its own; while any two groups' lines touch,
-// merge them and lay the merged group out again. Six stems means at most
-// five merges.
+// merge them and lay the merged group out again.
 function layoutLabels(items) {
   let groups = items.map(it => [it]);
   for (;;) {
@@ -599,6 +857,7 @@ function drawRadar() {
   stemLayer.textContent = '';
   const labelItems = [];
   for (const stem of ALL_STEMS) {
+    if (!stemShown(stem)) continue;
     // Where the stem actually is, motion and smoothing included.
     const a = motion.stems[stem].effective;
     const w = widthDeg[stem] || 0;
@@ -623,11 +882,10 @@ function drawRadar() {
   drawLabels(labelItems);
 }
 
-// Drag a dot to place that stem - the radar is the one view that shows
-// where everything is, and it was display-only. With a mouse, dragging
-// empty space inside the ring turns the whole armed group, like the
-// rotate slider. On touch only a dot starts a drag, so the radar (which
-// fills a phone's first screen) can still be used to scroll the page.
+// Drag a dot to place that stem. With a mouse, dragging empty space inside
+// the ring turns the whole armed group, like the rotate slider. On touch
+// only a dot starts a drag, so the radar (which fills a phone's first
+// screen) can still be used to scroll the page.
 const DOT_HIT = 20;
 let radarDrag = null;
 function radarPoint(ev) {
@@ -639,7 +897,7 @@ const angleOfPoint = (p) => wrap180(Math.atan2(p.x - CX, CY - p.y) * 180 / Math.
 function stemAtPoint(p) {
   let best = null, bestD = DOT_HIT;
   for (const s of ALL_STEMS) {
-    if (mutedStems.has(s)) continue;
+    if (mutedStems.has(s) || !stemShown(s)) continue;
     const [x, y] = polar(motion.stems[s].effective, RING);
     const d = Math.hypot(p.x - x, p.y - y);
     if (d < bestD) { bestD = d; best = s; }
@@ -682,19 +940,54 @@ radar.addEventListener('touchstart', (ev) => {
 }, { passive: false });
 
 // Redraw the radar, dial pointers and level meters at 20 Hz; the measured
-// MIDI clock tempo twice a second while the panel shows it.
+// MIDI clock tempo and the level-driven smoothing value twice a second
+// while the panel shows them.
 let tickN = 0;
 motion.onTick = () => {
   if ((++tickN & 1) === 0) requestRadar();
-  if (tickN % 20 === 0 && activeSpatialStem && spatial[activeSpatialStem].tempoSource === 1) refreshTempoHint();
+  if (tickN % 20 === 0 && activeSpatialStem) {
+    const st = spatial[activeSpatialStem];
+    if (st.tempoSource === 1) refreshTempoHint();
+    if (st.smoothingMode) refreshSpatialRows();
+  }
 };
 
-/* ---------------- songs ---------------- */
+/* ---------------- songs + playlist order ---------------- */
+
+// The playlist's order, by song name, kept in this browser: songs have to
+// be added again each visit (a page cannot keep file handles), but they
+// come back in the order they were left in. New songs go to the end.
+const ORDER_KEY = 'playlistOrder';
+let savedOrder = pref(ORDER_KEY, []);
+function saveOrder() {
+  const names = songs.map((s) => s.name);
+  const rest = savedOrder.filter((n) => !names.includes(n));
+  savedOrder = names.concat(rest).slice(0, 2000);
+  setPref(ORDER_KEY, savedOrder);
+}
+function sortByOrder(list) {
+  const rank = new Map(savedOrder.map((n, i) => [n, i]));
+  return list.map((s, i) => [s, i]).sort((a, b) => {
+    const ra = rank.has(a[0].name) ? rank.get(a[0].name) : Infinity, rb = rank.has(b[0].name) ? rank.get(b[0].name) : Infinity;
+    return ra !== rb ? ra - rb : a[1] - b[1];
+  }).map((x) => x[0]);
+}
+// songs[] was reordered: find the current song again.
+function reindex(current) { songIndex = current ? songs.indexOf(current) : -1; }
+
+$('playlistResetBtn').addEventListener('click', () => {
+  if (!songs.length || !confirm('Put the playlist back in A-Z order?')) return;
+  const current = songs[songIndex];
+  songs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  reindex(current);
+  saveOrder(); renderSongs();
+});
 
 function renderSongs() {
   songList.textContent = '';
   if (songs.length === 0) {
-    songList.innerHTML = '<div class="empty-songs">No songs yet. Drop a 12-channel show WAV, or a folder of stems, on the box above.</div>';
+    songList.innerHTML = '<div class="empty-songs">No songs yet. Drop a show WAV, a folder of stems, or any song on the box above.</div>';
+    renderPresetPanel();
     return;
   }
   songs.forEach((song, i) => {
@@ -705,18 +998,34 @@ function renderSongs() {
     row.tabIndex = 0;
     row.setAttribute('role', 'button');
     row.setAttribute('aria-current', i === songIndex ? 'true' : 'false');
+    const handle = document.createElement('span');
+    handle.className = 'song-handle';
+    handle.textContent = '⋮⋮';
+    handle.title = 'Drag to reorder';
     const mark = document.createElement('span');
     mark.className = 'song-mark';
     if (isLoading) mark.innerHTML = '<span class="spin"></span>';
-    else mark.textContent = i === songIndex ? (engine.playing ? '▶' : '❚❚') : '';
+    else paintMark(mark, song);
     const label = document.createElement('span');
     label.className = 'song-name';
     label.textContent = song.name;
     label.title = song.name + ' - double-click to rename';
     label.addEventListener('dblclick', (e) => { e.stopPropagation(); renameSong(i); });
+    row.append(handle, mark, label);
+    if (hasAttached(song.name)) {
+      const tag = document.createElement('span');
+      tag.className = 'song-preset'; tag.textContent = 'CUSTOM'; tag.title = 'Has its own stem setup attached';
+      row.appendChild(tag);
+    }
+    if (song.slots.some((on, k) => on && IS_PART.has(ALL_STEMS[k]))) {
+      const kit = document.createElement('span');
+      kit.className = 'song-kit'; kit.textContent = 'KIT'; kit.title = 'Drum parts: kick, snare, toms, hi-hat, ride, crash';
+      row.appendChild(kit);
+    }
     const slots = document.createElement('span');
     slots.className = 'stem-slots';
     ALL_STEMS.forEach((s, k) => {
+      if (IS_PART.has(s)) return;   // the KIT tag stands for all six
       const dot = document.createElement('i');
       dot.style.background = STEM_COLOR[s];
       if (song.slots[k]) dot.classList.add('on');
@@ -732,13 +1041,81 @@ function renderSongs() {
     remove.title = 'Remove from the list';
     remove.setAttribute('aria-label', 'Remove ' + song.name);
     remove.addEventListener('click', (e) => { e.stopPropagation(); removeSong(i); });
-    row.appendChild(mark); row.appendChild(label); row.appendChild(slots); row.appendChild(dur); row.appendChild(remove);
-    row.addEventListener('click', () => { loadSongIndex(i, true); buzz(25); });
+    row.append(slots, dur);
+    // Plain songs get a split button, helper songs a drum-parts one, each
+    // showing its progress while it runs (stem splitter below).
+    if (canSplit(song) || canSplitParts(song) || song.split) {
+      const split = document.createElement('button');
+      split.className = 'song-split';
+      split.addEventListener('click', (e) => { e.stopPropagation(); onSplitClick(song); });
+      row.appendChild(split);
+      paintSplit(row, split, song);
+    }
+    row.appendChild(remove);
+    row.addEventListener('click', (ev) => { if (ev.target === handle) return; loadSongIndex(i, true); buzz(25); });
     row.addEventListener('keydown', (e) => {
       if (e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); loadSongIndex(i, true); }
     });
+    bindSongDrag(handle, row, song);
     songList.appendChild(row);
   });
+  renderPresetPanel();
+}
+
+// Reorder by dragging a row's handle - pointer events, as on the rig's
+// page, since HTML5 drag-and-drop does nothing on a touch screen. Near the
+// top or bottom of the screen the page scrolls so a song can be carried
+// the length of a long list.
+let songDrag = null;
+function bindSongDrag(handle, row, song) {
+  handle.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    handle.setPointerCapture(ev.pointerId);
+    songDrag = { song, row, target: null, after: false, y: ev.clientY };
+    row.classList.add('drag-src');
+    songDrag.scroller = setInterval(() => {
+      if (!songDrag) return;
+      if (songDrag.y < 60) window.scrollBy(0, -12);
+      else if (songDrag.y > window.innerHeight - 60) window.scrollBy(0, 12);
+    }, 30);
+  });
+  handle.addEventListener('pointermove', (ev) => {
+    if (!songDrag || songDrag.song !== song) return;
+    songDrag.y = ev.clientY;
+    const under = document.elementFromPoint(ev.clientX, ev.clientY);
+    const over = under && under.closest('.song-item');
+    songList.querySelectorAll('.drop-before, .drop-after').forEach(r => r.classList.remove('drop-before', 'drop-after'));
+    if (!over || over === row) { songDrag.target = null; return; }
+    const r = over.getBoundingClientRect();
+    songDrag.target = songs[[...songList.children].indexOf(over)];
+    songDrag.after = ev.clientY > r.top + r.height / 2;
+    over.classList.add(songDrag.after ? 'drop-after' : 'drop-before');
+  });
+  const end = () => {
+    if (!songDrag || songDrag.song !== song) return;
+    clearInterval(songDrag.scroller);
+    const { target, after } = songDrag;
+    songDrag = null;
+    row.classList.remove('drag-src');
+    if (!target) { renderSongs(); return; }
+    const current = songs[songIndex];
+    const from = songs.indexOf(song);
+    songs.splice(from, 1);
+    songs.splice(songs.indexOf(target) + (after ? 1 : 0), 0, song);
+    reindex(current);
+    saveOrder(); renderSongs();
+    buzz(20);
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
+// ▶ / ❚❚ only on the song actually in the engine; ⚠ on one that failed to
+// load (the reason is on hover and in the hint line).
+function paintMark(mark, song) {
+  mark.textContent = song === loadedSong && engine.song ? (engine.playing ? '▶' : '❚❚') : song.loadError ? '⚠' : '';
+  mark.title = song.loadError || '';
+  mark.classList.toggle('err', !!song.loadError && song !== loadedSong);
 }
 
 // Progress ticks arrive every slice of the decode; only touch the DOM when
@@ -757,7 +1134,10 @@ function showLoadProgress(x) {
 }
 
 let loadSeq = 0;
-async function loadSongIndex(i, autoplay) {
+// startAt (seconds) resumes a song part-way - used when a song's stems
+// arrive while it is playing as one sound; keepSetup leaves the stems as
+// they are then, rather than loading the song's setup over them.
+async function loadSongIndex(i, autoplay, startAt, keepSetup) {
   if (i < 0 || i >= songs.length) return;
   const song = songs[i];
   // Already in memory (clicking the current song, or a one-song list
@@ -771,36 +1151,43 @@ async function loadSongIndex(i, autoplay) {
   }
   const seq = ++loadSeq;
   songIndex = i;
+  song.loadError = null;
   loading = { song, pct: 0, autoplay: !!autoplay };
   // Let go of the previous song before decoding this one: two long
-  // 12-channel songs in memory at once is what gets a phone tab killed,
-  // and until now the old song also stayed playable under the new title.
+  // multichannel songs in memory at once is what gets a phone tab killed.
   loadedSong = null;
   engine.unload();
-  songHint.innerHTML = '&nbsp;';
+  songHint.textContent = '';
   renderSongs(); refreshTransportButtons();
   try {
     const decoded = await SSSongs.decodeSong(song, engine, (x) => { if (seq === loadSeq) showLoadProgress(x); });
     if (seq !== loadSeq) return; // a newer selection superseded this one
-    const loaded = await engine.loadSong(decoded);
-    if (seq !== loadSeq) { if (engine.song === loaded) engine.unload(); return; }
-    song.duration = loaded.duration;
+    const loaded_ = await engine.loadSong(decoded);
+    if (seq !== loadSeq) { if (engine.song === loaded_) engine.unload(); return; }
+    song.duration = loaded_.duration;
     loadedSong = song;
     const play = loading.autoplay;
     loading = null;
-    renderSongs(); refreshTransportButtons();
+    // A song change loads that song's setup, as on the rig.
+    if (!keepSetup) applySongSetup(song.name);
+    if (decoded.fallback) { toast(song.name + ': ' + decoded.fallback + ' - playing the original as one sound. Start SpatialStage Helper for the stems.', 5200); checkHelper(); }
+    if (startAt) engine.seek(startAt);
+    renderSongs(); refreshTransportButtons(); refreshCards(); requestRadar();
     if (play) engine.play();
   } catch (e) {
     if (seq !== loadSeq) return;
     loading = null;
+    song.loadError = 'Could not load: ' + e.message;
     renderSongs(); refreshTransportButtons();
     songHint.textContent = 'Could not load ' + song.name + ': ' + e.message;
+    if (song.kind === 'helper') checkHelper();
   }
 }
 
 function removeSong(i) {
   const song = songs[i];
   songs.splice(i, 1);
+  cancelSplit(song);
   if (song === loadedSong || (loading && loading.song === song)) {
     loadSeq++; // abandons a decode in flight
     loading = null; loadedSong = null;
@@ -808,17 +1195,23 @@ function removeSong(i) {
     songIndex = -1;
   } else if (i < songIndex) songIndex--;
   else if (i === songIndex) songIndex = -1;
-  renderSongs(); refreshTransportButtons();
+  renderSongs(); refreshTransportButtons(); refreshCards();
 }
 
-// Presets are keyed by song name, so a rename carries the preset along.
+// Setups attach by song name, so a rename carries the attached one along.
 function renameSong(i) {
   const song = songs[i];
-  const name = (prompt('Song name (presets are saved under it):', song.name) || '').trim();
+  const name = (prompt('Song name (its attached setup is kept under it):', song.name) || '').trim();
   if (!name || name === song.name) return;
-  const all = readPresets();
-  if (all[song.name] && !all[name]) { all[name] = all[song.name]; writePresets(all); }
+  if (setupStore.songs[song.name] && !setupStore.songs[name]) {
+    setupStore.songs[name] = setupStore.songs[song.name];
+    delete setupStore.songs[song.name];
+    storeSetups();
+  }
+  if (loaded.source === 'song' && loaded.song === song.name) loaded.song = name;
+  savedOrder = savedOrder.map((n) => (n === song.name ? name : n));
   song.name = name;
+  saveOrder();
   renderSongs(); refreshStatus();
 }
 
@@ -831,9 +1224,20 @@ async function addFiles(files) {
   try {
     const found = await SSSongs.scanFiles(files);
     if (!found.length) toast('No audio files in that selection');
-    songs.push(...found);
+    const current = songs[songIndex];
+    songs = sortByOrder(songs.concat(found));
+    reindex(current);
+    saveOrder();
     renderSongs(); refreshTransportButtons();
-    if (found.length) toast('Added ' + (found.length === 1 ? found[0].name : found.length + ' songs'));
+    const added = found.length === 1 ? found[0].name : found.length + ' songs';
+    const plain = found.filter(canSplit);
+    if (plain.length && helperReadyNow() && helperPrefs.auto) {
+      plain.forEach(s => queueSplit(s, true));
+      toast('Added ' + added + ' - splitting into stems in the background; it plays as one sound until then.', 4200);
+    } else if (found.length) {
+      toast('Added ' + added);
+      if (plain.length) offerSplitting();
+    }
     if (!engine.song && !loading && found.length) loadSongIndex(songs.indexOf(found[0]), false);
   } catch (e) {
     alert('Could not add: ' + e.message);
@@ -884,8 +1288,6 @@ if ('webkitdirectory' in folderInput) {
   folderInput.addEventListener('change', () => { addFiles([...folderInput.files]); folderInput.value = ''; });
 }
 // The whole page takes drops; the box lights up while files are over it.
-// One document-level handler: the old box-level one also fired alongside
-// it whenever the drop landed on the box's text, adding every file twice.
 let dragDepth = 0;
 const draggingFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
 document.addEventListener('dragenter', (e) => { if (!draggingFiles(e)) return; dragDepth++; dropZone.classList.add('over'); });
@@ -896,6 +1298,355 @@ document.addEventListener('drop', (e) => {
   dragDepth = 0; dropZone.classList.remove('over');
   if (e.dataTransfer) filesFromDataTransfer(e.dataTransfer).then(addFiles);
 });
+
+/* ---------------- stem splitter (SpatialStage Helper) ---------------- */
+
+// A plain song (kind 'single': one stereo mix) can be split into stems by
+// SpatialStage Helper - a small program the user installs once (helper/),
+// which runs Demucs on their own PC (js/helper.js talks to it). A split
+// song's drums can then be split into kit parts the same way (helper 1.1+).
+// Jobs run one at a time; a song keeps playing until its new stems are
+// back, then swaps over at the same position.
+const helperBar = $('helperBar'), helperDot = $('helperDot'), helperText = $('helperText'), helperOpenBtn = $('helperOpenBtn');
+const helperDialog = $('helperDialog'), helperStatusLine = $('helperStatusLine');
+const helperSetup = $('helperSetup'), helperReady = $('helperReady');
+const helperAutoEl = $('helperAuto'), helperModelRow = $('helperModelRow'), helperModelHint = $('helperModelHint');
+const helperPartsEl = $('helperParts'), helperPartsRow = $('helperPartsRow');
+const libraryList = $('libraryList'), libraryCount = $('libraryCount');
+const HELPER_PREFS_KEY = 'spatialstage.helper.prefs';
+const helperPrefs = { auto: true, model: 'htdemucs_6s', parts: false };
+try { Object.assign(helperPrefs, JSON.parse(localStorage.getItem(HELPER_PREFS_KEY) || '{}')); } catch (e) {}
+const saveHelperPrefs = () => { try { localStorage.setItem(HELPER_PREFS_KEY, JSON.stringify(helperPrefs)); } catch (e) {} };
+// The helper runs on a PC; on a phone 127.0.0.1 is the phone itself.
+const isPhone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const canSplit = (song) => song.kind === 'single' && !!song.file;
+const helperReadyNow = () => !!SSHelper.info && !SSHelper.outdated;
+const hasParts = (stems) => DRUM_PARTS.some((p) => stems.includes(p));
+// A helper song with a drums stem and no parts yet, on a helper that can
+// split drums.
+const canSplitParts = (song) => song.kind === 'helper' && song.stems.includes('drums') && !hasParts(song.stems) && SSHelper.supports('parts');
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+let helperChecked = false, helperChecking = false, splitHintShown = false;
+const splitQueue = [];
+let splitting = null; // the song being worked on right now
+let helperPoll = null;
+
+async function checkHelper() {
+  if (helperChecking) return helperReadyNow();
+  helperChecking = true;
+  const was = helperReadyNow();
+  if (!helperChecked) { helperChecked = true; refreshHelperUi(); }
+  await SSHelper.probe();
+  helperChecking = false;
+  refreshHelperUi();
+  if (helperReadyNow() && !was) {
+    // Plain songs added while it was away get their turn now.
+    if (helperPrefs.auto) songs.filter(s => canSplit(s) && !s.split).forEach(s => queueSplit(s, true));
+    pumpSplits();
+    if (helperDialog.open) refreshLibrary();
+    renderSongs();
+    refreshLed();
+  }
+  return helperReadyNow();
+}
+
+// Keep an eye on the helper: quickly while the dialog is open or songs are
+// waiting for it, lazily otherwise. A split in progress polls its own job.
+function scheduleHelperPoll() {
+  clearTimeout(helperPoll);
+  if (!helperChecked) return;
+  const quick = helperDialog.open || (!helperReadyNow() && splitQueue.length > 0);
+  helperPoll = setTimeout(async () => {
+    if (!document.hidden && !splitting) await checkHelper();
+    scheduleHelperPoll();
+  }, quick ? 3000 : 15000);
+}
+
+function helperSummary() {
+  const info = SSHelper.info;
+  const waiting = splitQueue.length;
+  if (splitting && splitting.split) {
+    const s = splitting.split;
+    const what = s.parts ? 'Splitting the drums of ' : 'Splitting ';
+    const pct = s.state === 'running' ? ' ' + Math.round(s.pct * 100) + '%' : '...';
+    return { dot: 'busy', text: what + splitting.name + pct + (waiting ? ' · ' + waiting + ' waiting' : ''), btn: 'Open' };
+  }
+  if (info && SSHelper.outdated) return { dot: 'missing', text: 'Your SpatialStage Helper is out of date', btn: 'Update' };
+  if (info) return { dot: 'ready', text: 'Stem splitter ready (' + (info.device === 'cuda' ? 'GPU' : 'CPU') + ')' + (helperPrefs.auto ? ' · splits new songs' : ''), btn: 'Library' };
+  if (helperChecking && !SSHelper.seen) return { dot: '', text: 'Looking for the helper...', btn: 'Open' };
+  if (helperChecked && SSHelper.seen) return { dot: 'missing', text: 'Stem splitter not running' + (waiting ? ' · ' + waiting + ' waiting' : ''), btn: 'Start' };
+  return { dot: '', text: 'Split plain songs into stems - free helper for your PC', btn: 'Set up' };
+}
+
+function refreshHelperUi() {
+  helperBar.hidden = isPhone;
+  const sum = helperSummary();
+  helperDot.className = 'helper-dot' + (sum.dot ? ' ' + sum.dot : '');
+  helperText.textContent = sum.text;
+  helperText.title = sum.text;
+  helperOpenBtn.textContent = sum.btn;
+  if (!helperDialog.open) return;
+  const info = SSHelper.info, ready = helperReadyNow();
+  helperSetup.hidden = ready;
+  helperReady.hidden = !ready;
+  helperStatusLine.className = 'helper-status' + (ready ? ' ready' : helperChecked && !helperChecking ? ' missing' : '');
+  if (ready) {
+    helperStatusLine.textContent = 'Connected: SpatialStage Helper ' + info.version + ' on this PC, splitting on the ' +
+      (info.device === 'cuda' ? 'GPU (' + (info.deviceName || 'NVIDIA') + ')' : 'CPU') + '.' + (splitting ? ' Busy: ' + helperText.textContent + '.' : '');
+  } else if (info && SSHelper.outdated) {
+    helperStatusLine.textContent = 'Your helper (' + info.version + ') is older than this page needs. Download it again and run the installer - it updates in place and keeps your split songs.';
+  } else if (helperChecking || !helperChecked) {
+    helperStatusLine.textContent = 'Looking for the helper on this PC...';
+  } else {
+    helperStatusLine.textContent = 'Not found on this PC: it is not installed, not running, or the browser was not allowed to reach it.';
+  }
+  helperAutoEl.checked = !!helperPrefs.auto;
+  helperPartsEl.checked = !!helperPrefs.parts;
+  // Drum parts need helper 1.1: say so rather than offer a box that does nothing.
+  helperPartsEl.disabled = !SSHelper.supports('parts');
+  helperPartsRow.title = SSHelper.supports('parts') ? '' : 'Needs SpatialStage Helper 1.1 - download it again and run the installer';
+  setSegActive(helperModelRow, helperPrefs.model);
+  const m = info && (info.models || []).find(x => x.id === helperPrefs.model);
+  helperModelHint.textContent = m ? m.label + (m.downloaded ? '' : ' - its model downloads the first time it is used') : '';
+}
+
+function openHelperDialog() {
+  if (!helperDialog.open) helperDialog.showModal();
+  refreshHelperUi();
+  checkHelper().then(() => { if (helperReadyNow()) refreshLibrary(); scheduleHelperPoll(); });
+}
+helperDialog.addEventListener('close', () => scheduleHelperPoll());
+$('helperCloseBtn').addEventListener('click', () => helperDialog.close());
+// Clicking the dimmed area outside closes it too.
+helperDialog.addEventListener('click', (e) => { if (e.target === helperDialog) helperDialog.close(); });
+helperOpenBtn.addEventListener('click', () => { if (helperOpenBtn.textContent === 'Start') launchHelper(); openHelperDialog(); });
+$('helperRetryBtn').addEventListener('click', () => { helperStatusLine.textContent = 'Looking for the helper on this PC...'; checkHelper().then(() => { if (helperReadyNow()) refreshLibrary(); }); });
+$('helperStartBtn').addEventListener('click', launchHelper);
+helperAutoEl.addEventListener('change', () => {
+  helperPrefs.auto = helperAutoEl.checked; saveHelperPrefs();
+  if (helperPrefs.auto && helperReadyNow()) songs.filter(s => canSplit(s) && !s.split).forEach(s => queueSplit(s, true));
+  refreshHelperUi();
+});
+helperPartsEl.addEventListener('change', () => { helperPrefs.parts = helperPartsEl.checked; saveHelperPrefs(); });
+bindSegRow(helperModelRow, (v) => { helperPrefs.model = v; saveHelperPrefs(); refreshHelperUi(); });
+
+// The installer registers spatialstage-helper:// to start the helper; the
+// browser asks before opening it. Not installed, nothing happens - and the
+// setup steps are right there in the dialog.
+function launchHelper() {
+  window.location.href = 'spatialstage-helper://start';
+  helperStatusLine.className = 'helper-status';
+  helperStatusLine.textContent = 'Starting the helper... If nothing happens, start "SpatialStage Helper" from the Start menu.';
+  let tries = 0;
+  const again = async () => {
+    if (await checkHelper()) { refreshLibrary(); return; }
+    if (++tries < 12) setTimeout(again, 2000);
+  };
+  setTimeout(again, 2000);
+}
+
+// The first plain song added without the helper gets one pointer to it.
+function offerSplitting() {
+  if (isPhone) return;
+  if (SSHelper.seen && !helperReadyNow()) { checkHelper(); return; } // set up before - look for it now
+  if (splitHintShown) return;
+  splitHintShown = true;
+  setTimeout(() => {
+    if (helperDialog.open || helperReadyNow()) return; // already on it
+    toast('Plain songs play as one sound. To move vocals, drums and bass separately, split them with the free Stem splitter (below the song list).', 5600);
+  }, 1500);
+}
+
+async function refreshLibrary() {
+  if (!helperReadyNow()) return;
+  let list;
+  try { list = await SSHelper.songs(); }
+  catch (e) { libraryList.innerHTML = '<div class="lib-empty"></div>'; libraryList.firstChild.textContent = 'Could not read the library: ' + e.message; return; }
+  libraryCount.textContent = list.length ? '(' + list.length + ')' : '';
+  libraryList.textContent = '';
+  if (!list.length) { libraryList.innerHTML = '<div class="lib-empty">Nothing split yet - drop a song on the page.</div>'; return; }
+  for (const meta of list) {
+    const row = document.createElement('div');
+    row.className = 'lib-item';
+    const name = document.createElement('span');
+    name.className = 'lib-name'; name.textContent = meta.name; name.title = meta.name;
+    const info = document.createElement('span');
+    info.className = 'lib-meta';
+    const own = meta.stems.filter((s) => !IS_PART.has(s) && s !== LEFTOVER).length;
+    info.textContent = formatTime(meta.duration) + ' · ' + own + ' stems' + (hasParts(meta.stems) ? ' + kit' : '');
+    const inList = songs.some(s => s.helperId === meta.id);
+    const add = document.createElement('button');
+    add.className = 'dlg-btn'; add.textContent = inList ? 'In list' : 'Add'; add.disabled = inList;
+    add.addEventListener('click', () => { addFromLibrary(meta); refreshLibrary(); });
+    const del = document.createElement('button');
+    del.className = 'song-remove'; del.innerHTML = '&times;'; del.title = 'Delete these stems from this PC';
+    del.addEventListener('click', async () => {
+      if (!confirm('Delete the stems of "' + meta.name + '" from this PC? The original song file is not touched.')) return;
+      try { await SSHelper.removeSong(meta.id); } catch (e) { toast('Could not delete: ' + e.message); }
+      refreshLibrary();
+    });
+    row.append(name, info, add, del);
+    libraryList.appendChild(row);
+  }
+}
+
+// A song the helper holds the stems of. stems is the helper's own list
+// (drums_rest included); songs.js picks the files per card from it.
+function helperDescriptor(meta, file) {
+  const stems = meta.stems.slice();
+  const parts = hasParts(stems);
+  const slots = ALL_STEMS.map((s) => (s === 'drums' && parts ? stems.includes(LEFTOVER) : stems.includes(s)));
+  return { name: meta.name, kind: 'helper', helperId: meta.id, stems, file: file || null, duration: meta.duration, slots };
+}
+
+function addFromLibrary(meta) {
+  if (songs.some(s => s.helperId === meta.id)) return;
+  const song = helperDescriptor(meta, null);
+  songs = sortByOrder(songs.concat([song]));
+  reindex(loadedSong || (loading && loading.song) || null);
+  saveOrder();
+  renderSongs(); refreshTransportButtons();
+  toast('Added ' + meta.name);
+  if (!engine.song && !loading) loadSongIndex(songs.indexOf(song), false);
+}
+
+// What a song's split button says and does, by state.
+function paintSplit(row, btn, song) {
+  const s = song.split;
+  const kit = canSplitParts(song) || (s && s.parts);
+  let text = kit ? '✂ kit' : '✂';
+  let title = kit ? 'Split the drums into kick, snare, toms, hi-hat, ride and crash (slow - several times the song\'s length)' : 'Split into stems with SpatialStage Helper';
+  let cls = '';
+  if (s && s.state === 'queued') { text = '✂ ' + (helperReadyNow() ? 'queued' : 'waiting'); title = helperReadyNow() ? 'Waiting for the song before it - click to take it out of the queue' : 'Waiting for SpatialStage Helper - click to cancel'; cls = 'active'; }
+  else if (s && s.state === 'running') { text = '✂ ' + Math.round(s.pct * 100) + '%'; title = (s.message || 'splitting') + ' - click to stop'; cls = 'active'; }
+  else if (s && s.state === 'preparing') { text = '✂ ...'; title = (s.message || 'preparing') + ' - click to stop'; cls = 'active'; }
+  else if (s && s.state === 'error') { text = '✂ failed'; title = 'Could not split: ' + s.message + ' - click to try again'; cls = 'failed'; }
+  btn.textContent = text;
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.className = 'song-split' + (cls ? ' ' + cls : '');
+  const busy = s && (s.state === 'running' || s.state === 'preparing');
+  row.classList.toggle('splitting', !!busy);
+  row.style.setProperty('--s', busy ? Math.round((s.pct || 0) * 100) + '%' : '0%');
+}
+
+function refreshSongSplit(song) {
+  const row = songList.children[songs.indexOf(song)];
+  const btn = row && row.querySelector('.song-split');
+  if (btn) paintSplit(row, btn, song); else renderSongs();
+  refreshHelperUi();
+}
+
+function onSplitClick(song) {
+  const s = song.split;
+  if (!s || s.state === 'error') {
+    const parts = canSplitParts(song) || (s && s.parts);
+    song.split = null;
+    queueSplit(song, !helperReadyNow(), parts);
+    if (!helperReadyNow()) openHelperDialog();
+    return;
+  }
+  if (s.state === 'queued') { cancelSplit(song); refreshSongSplit(song); return; }
+  if (confirm('Stop splitting "' + song.name + '"?')) { cancelSplit(song); refreshSongSplit(song); }
+}
+
+// parts: split this (helper) song's drums rather than the song.
+function queueSplit(song, quiet, parts) {
+  if (!(parts ? canSplitParts(song) : canSplit(song)) || splitQueue.includes(song) || splitting === song) return;
+  song.split = { state: 'queued', pct: 0, message: 'waiting', parts: !!parts };
+  splitQueue.push(song);
+  refreshSongSplit(song);
+  if (!quiet) toast(parts ? 'Splitting the drums of ' + song.name + ' in the background' : 'Splitting ' + song.name + ' into stems in the background');
+  pumpSplits();
+  scheduleHelperPoll();
+}
+
+function cancelSplit(song) {
+  const i = splitQueue.indexOf(song);
+  if (i >= 0) splitQueue.splice(i, 1);
+  if (song.split && splitting === song) {
+    song.split.cancelled = true;
+    if (song.split.jobId) SSHelper.cancel(song.split.jobId).catch(() => {});
+  } else if (song.split) song.split = null;
+}
+
+async function followJob(song, job, set) {
+  song.split.jobId = job.id;
+  if (song.split.cancelled) SSHelper.cancel(job.id).catch(() => {});
+  while (job.state === 'queued' || job.state === 'running') {
+    set({ state: 'running', pct: job.progress || 0, message: job.message });
+    await sleep(1000);
+    job = await SSHelper.job(job.id);
+  }
+  if (job.state === 'cancelled' || song.split.cancelled) throw new Error('cancelled');
+  if (job.state !== 'done') throw new Error(job.error || 'the split failed');
+}
+
+async function pumpSplits() {
+  if (splitting || !splitQueue.length || !helperReadyNow()) return;
+  const song = splitQueue.shift();
+  splitting = song;
+  const parts = !!(song.split && song.split.parts);
+  const model = helperPrefs.model;
+  const set = (patch) => { if (song.split) Object.assign(song.split, patch); refreshSongSplit(song); };
+  try {
+    let meta;
+    if (parts) {
+      set({ state: 'preparing', pct: 0, message: 'asking the helper' });
+      await followJob(song, await SSHelper.startParts(song.helperId), set);
+      meta = await SSHelper.song(song.helperId);
+    } else {
+      set({ state: 'preparing', pct: 0, message: 'reading the song' });
+      const key = await SSHelper.fileKey(song.file);
+      const id = key + '-' + model;
+      meta = await SSHelper.song(id);  // split before (maybe under another name)
+      if (!meta && !song.split.cancelled) {
+        set({ message: 'decoding the song' });
+        const wav = await SSHelper.toWav(song.file);
+        if (song.split.cancelled) throw new Error('cancelled');
+        set({ message: 'sending it to the helper' });
+        await followJob(song, await SSHelper.startJob(wav, key, song.name, model), set);
+        meta = await SSHelper.song(id);
+      }
+    }
+    if (!meta) throw new Error('the helper lost the stems');
+    if (song.split.cancelled) throw new Error('cancelled');
+    applySplit(song, meta);
+  } catch (e) {
+    const cancelled = song.split && song.split.cancelled;
+    song.split = cancelled ? null : { state: 'error', pct: 0, message: e.message, parts };
+    if (!cancelled && songs.includes(song)) toast('Could not split ' + song.name + ': ' + e.message, 5000);
+    if (!cancelled) checkHelper(); // it may have been closed mid-split
+  } finally {
+    splitting = null;
+    if (songs.includes(song)) refreshSongSplit(song);
+    refreshHelperUi();
+    if (helperDialog.open) refreshLibrary();
+    pumpSplits();
+  }
+}
+
+// The song becomes a stem song (or gains its drum parts). If it is the one
+// loaded, reload it from its stems at the same spot, playing if it was,
+// with the stems left exactly as they are set.
+function applySplit(song, meta) {
+  const hadParts = song.kind === 'helper' && hasParts(song.stems);
+  const next = helperDescriptor(meta, song.file);
+  next.name = song.name; // keep a rename made while it was splitting
+  Object.assign(song, next);
+  song.split = null;
+  if (!songs.includes(song)) return;
+  renderSongs();
+  const gotParts = hasParts(song.stems) && !hadParts;
+  toast(song.name + (gotParts ? ': drums split into kit parts' : ': split into ' + meta.stems.length + ' stems'));
+  if (song === loadedSong || (loading && loading.song === song)) {
+    const pos = engine.position(), was = engine.playing || !!(loading && loading.autoplay);
+    loadedSong = null;
+    loadSongIndex(songs.indexOf(song), was, pos, true);
+  }
+  // Kit parts next, if asked for and this was a plain split.
+  if (!gotParts && helperPrefs.parts && canSplitParts(song)) queueSplit(song, true, true);
+}
 
 /* ---------------- transport ---------------- */
 
@@ -931,9 +1682,10 @@ function refreshTransportButtons() {
   stopBtn.disabled = !engine.song;
   seekBar.disabled = !engine.song;
   // The ▶ / ❚❚ mark on the current song row follows play/pause.
-  const row = songIndex >= 0 && !(loading && loading.song === songs[songIndex]) ? songList.children[songIndex] : null;
+  const current = songs[songIndex];
+  const row = current && !(loading && loading.song === current) ? songList.children[songIndex] : null;
   const mark = row && row.querySelector('.song-mark');
-  if (mark) mark.textContent = engine.playing ? '▶' : '❚❚';
+  if (mark) paintMark(mark, current);
   refreshStatus();
 }
 engine.onStateChange = refreshTransportButtons;
@@ -969,31 +1721,54 @@ function nudgeAddSongs() {
   if (r.top < 0 || r.bottom > window.innerHeight) dropZone.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
+// WAV or MP3 (the rig's bridge makes an MP3 of every take with ffmpeg; here
+// LAME runs in the page - js/mp3.js).
+let recordFormat = pref('recordFormat', 'wav') === 'mp3' ? 'mp3' : 'wav';
+setSegActive($('recordFormatRow'), recordFormat);
+bindSegRow($('recordFormatRow'), (v) => { recordFormat = v; setPref('recordFormat', v); setSegActive($('recordFormatRow'), v); });
+
+function offerTake(blob, name, secs) {
+  recordStatus.hidden = false;
+  recordStatus.classList.remove('live');
+  recordStatus.innerHTML = 'Take ready (' + formatTime(secs) + ', ' + (blob.size / 1048576).toFixed(1) + ' MB): <a href="#" id="takeLink"></a>';
+  const link = $('takeLink');
+  link.textContent = 'download ' + name;
+  link.addEventListener('click', (e) => { e.preventDefault(); download(blob, name); });
+}
+
 let recTimer = null;
 recordBtn.addEventListener('click', async () => {
   await engine.ensure();
   if (engine.isRecording) {
     clearInterval(recTimer); recTimer = null;
     const secs = engine.recordingSeconds;
-    const blob = engine.stopRecording();
-    const name = 'spatialstage-take-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.wav';
-    recordStatus.hidden = false;
-    recordStatus.classList.remove('live');
-    recordStatus.innerHTML = 'Take ready (' + formatTime(secs) + ', ' + (blob.size / 1048576).toFixed(1) + ' MB): <a href="#" id="takeLink"></a>';
-    const link = $('takeLink');
-    link.textContent = 'download ' + name;
-    link.addEventListener('click', (e) => { e.preventDefault(); download(blob, name); });
+    const take = engine.stopRecording();
+    const stamp = 'spatialstage-take-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     buzz(15);
-  } else {
-    engine.startRecording();
-    recordStatus.hidden = false;
-    recordStatus.classList.add('live');
-    // A running clock, so a take left recording is noticed.
-    const tick = () => { recordStatus.textContent = '● REC ' + formatTime(engine.recordingSeconds) + (engine.playing ? '' : ' (paused - recording silence)') + ' · tap ● to stop'; };
-    tick();
-    recTimer = setInterval(tick, 500);
-    buzz([15, 60, 15]);
+    refreshTransportButtons();
+    const wav = () => new Blob([SSWav.encodeWav(take.channels, take.sampleRate)], { type: 'audio/wav' });
+    if (recordFormat === 'mp3') {
+      recordStatus.hidden = false; recordStatus.classList.remove('live');
+      recordStatus.textContent = 'Encoding MP3...';
+      try {
+        const blob = await SSMp3.encode(take, (x) => { recordStatus.textContent = 'Encoding MP3... ' + Math.round(x * 100) + '%'; });
+        offerTake(blob, stamp + '.mp3', secs);
+      } catch (e) {
+        toast('MP3 failed (' + e.message + ') - here is the WAV instead.', 4500);
+        offerTake(wav(), stamp + '.wav', secs);
+      }
+    } else offerTake(wav(), stamp + '.wav', secs);
+    return;
   }
+  engine.startRecording();
+  recordStatus.hidden = false;
+  recordStatus.classList.add('live');
+  // A running clock, so a take left recording is noticed.
+  const tick = () => { recordStatus.textContent = '● REC ' + formatTime(engine.recordingSeconds) + (engine.playing ? '' : ' (paused - recording silence)') + ' · tap ● to stop'; };
+  tick();
+  recTimer = setInterval(tick, 500);
+  buzz([15, 60, 15]);
+  if (recordFormat === 'mp3') SSMp3.load().catch(() => {});   // fetch the encoder now, not at the end
   refreshTransportButtons();
 });
 
@@ -1004,10 +1779,8 @@ function download(blob, name) {
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 2000);
 }
 
-// `seeking` holds the bar still under the finger. It used to be cleared
-// only by 'change', which never fires for a press that does not move the
-// thumb - and then the position display froze for good. Now any release
-// ends it, and a seek happens only if the value was actually dragged.
+// `seeking` holds the bar still under the finger. It is cleared by any
+// release, and a seek happens only if the value was actually dragged.
 const commitSeek = () => {
   if (seekDirty) engine.seek(Number(seekBar.value));
   seeking = false; seekDirty = false;
@@ -1026,22 +1799,124 @@ masterVolSlider.addEventListener('input', () => {
 
 bindSegRow($('panModeRow'), (v) => { engine.setPanMode(v); setSegActive($('panModeRow'), v); });
 
+/* ---------------- output: quad speakers, L/R swap ---------------- */
+
+const quadOutputRow = $('quadOutputRow'), lrSwapRow = $('lrSwapRow');
+const outputPrefs = Object.assign({ quad: false, lrSwap: false }, pref('output', {}));
+function showOutput() {
+  setSegActive(quadOutputRow, engine.quad ? 1 : 0);
+  setSegActive(lrSwapRow, engine.lrSwap ? 1 : 0);
+}
+function setQuad(on, quiet) {
+  const ok = engine.setQuad(on);
+  if (!ok) {
+    if (!quiet) toast('This output has ' + engine.maxChannels + ' channels. Quad needs a 4-channel (or 5.1/7.1) sound card set as the default playback device.', 6000);
+    engine.setQuad(false);
+  }
+  outputPrefs.quad = engine.quad; setPref('output', outputPrefs);
+  showOutput();
+}
+// Called once audio has started (the device's channel count is only known then).
+function applyOutputPrefs() {
+  engine.setLrSwap(outputPrefs.lrSwap);
+  if (outputPrefs.quad) setQuad(true, true);
+  showOutput();
+}
+bindSegRow(quadOutputRow, async (v) => { await engine.ensure(); setQuad(v === 1); buzz(15); });
+bindSegRow(lrSwapRow, (v) => {
+  engine.setLrSwap(v === 1);
+  outputPrefs.lrSwap = v === 1; setPref('output', outputPrefs);
+  showOutput(); buzz(15);
+});
+
+/* ---------------- LED strip (through the helper) ---------------- */
+
+const led = new SSLedStrip(ALL_STEMS, STEM_COLOR);
+led.getState = () => {
+  const azimuth = {}, gain = {};
+  for (const s of ALL_STEMS) {
+    azimuth[s] = motion.stems[s].effective;
+    gain[s] = engine.song && engine.hasStem(s) && !mutedStems.has(s) ? volume[s] : 0;
+  }
+  return { azimuth, gain, mirror: engine.lrSwap };
+};
+const ledStatus = $('ledStatus'), ledSetup = $('ledSetup');
+let ledWanted = pref('ledOn', false);
+led.onError = (msg) => { ledStatus.textContent = 'Not reaching the strip: ' + msg; };
+
+function refreshLed() {
+  ledSetup.hidden = isPhone;
+  const cfg = led.cfg;
+  for (const [id, v] of [['ledHost', cfg.host], ['ledCount', cfg.count], ['ledStart', cfg.startIndex], ['ledFront', cfg.frontIndex], ['ledBrightness', cfg.brightness]]) {
+    const el = $(id);
+    if (document.activeElement !== el) el.value = v;
+  }
+  setSegActive($('ledDirRow'), cfg.clockwise ? 1 : 0);
+  const can = led.configured && helperReadyNow() && SSHelper.supports('led');
+  if (ledWanted && can) led.start(); else led.stop();
+  setSegActive($('ledRunRow'), led.running ? 1 : 0);
+  ledStatus.textContent = !led.configured ? 'Enter the WLED address and LED count.'
+    : !helperReadyNow() ? 'Start SpatialStage Helper to drive the strip.'
+    : !SSHelper.supports('led') ? 'Your helper is too old for the LED strip - download it again and run the installer (1.1).'
+    : led.running ? 'Sending to ' + cfg.host + ' (' + cfg.count + ' LEDs).' : 'Off.';
+  refreshCards();
+}
+const ledNumber = (id, key) => $(id).addEventListener('change', () => { led.set({ [key]: Number($(id).value) || 0 }); refreshLed(); });
+$('ledHost').addEventListener('change', () => { led.set({ host: $('ledHost').value.trim() }); if (!SSHelper.info) checkHelper(); refreshLed(); });
+ledNumber('ledCount', 'count'); ledNumber('ledStart', 'startIndex'); ledNumber('ledFront', 'frontIndex');
+$('ledBrightness').addEventListener('input', () => led.set({ brightness: Number($('ledBrightness').value) }));
+bindSegRow($('ledDirRow'), (v) => { led.set({ clockwise: v === 1 }); refreshLed(); });
+bindSegRow($('ledRunRow'), (v) => {
+  ledWanted = v === 1; setPref('ledOn', ledWanted);
+  if (ledWanted && !helperReadyNow()) checkHelper().then(refreshLed);
+  refreshLed();
+});
+ledSetup.addEventListener('toggle', () => { if (ledSetup.open && !SSHelper.info && SSHelper.seen) checkHelper(); });
+
+// Per-stem LED look: one shared panel, like the rig's.
+const ledPanel = $('ledPanel'), ledColorEl = $('ledColor'), ledSpreadEl = $('ledSpread'), ledTailEl = $('ledTail');
+function openLedPanel(stem) {
+  activeLedStem = (activeLedStem === stem) ? null : stem;
+  ledPanel.hidden = activeLedStem === null;
+  if (activeLedStem) {
+    if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
+    $('ledStemName').textContent = stem.toUpperCase();
+    refreshLedPanel();
+  }
+  refreshCards();
+}
+function refreshLedPanel() {
+  if (!activeLedStem) return;
+  const look = led.cfg.stems[activeLedStem];
+  setSegActive($('ledOnRow'), look.on ? 1 : 0);
+  ledColorEl.value = look.color; $('ledColorHex').textContent = look.color;
+  ledSpreadEl.value = look.spread; $('ledSpreadOut').textContent = Math.round(look.spread) + '°';
+  ledTailEl.value = look.tail; $('ledTailOut').textContent = look.tail > 0 ? look.tail.toFixed(1) + 's' : 'off';
+}
+const setLed = (patch) => { if (activeLedStem) { led.setStem(activeLedStem, patch); refreshLedPanel(); refreshCards(); } };
+bindSegRow($('ledOnRow'), (v) => setLed({ on: v === 1 }));
+ledColorEl.addEventListener('input', () => setLed({ color: ledColorEl.value }));
+ledSpreadEl.addEventListener('input', () => setLed({ spread: Number(ledSpreadEl.value) }));
+ledTailEl.addEventListener('input', () => setLed({ tail: Number(ledTailEl.value) }));
+$('ledCloseBtn').addEventListener('click', () => { if (activeLedStem) openLedPanel(activeLedStem); });
+
 /* ---------------- rotation ---------------- */
 
 function updateStemLabel() {
-  if (selectedStems.size === 0) stemLabel.textContent = 'NONE ARMED';
-  else if (selectedStems.size === ALL_STEMS.length) stemLabel.textContent = 'ALL ARMED';
-  else stemLabel.textContent = [...selectedStems].map(s => s.toUpperCase()).join(', ');
+  const shown = ALL_STEMS.filter(stemShown);
+  const armed = shown.filter((s) => selectedStems.has(s));
+  if (armed.length === 0) stemLabel.textContent = 'NONE ARMED';
+  else if (armed.length === shown.length) stemLabel.textContent = 'ALL ARMED';
+  else stemLabel.textContent = armed.map(s => s.toUpperCase()).join(', ');
 }
 
+// Applies the CHANGE in the control, not its absolute value, so a placed
+// stem rotates from where it was put rather than snapping to the slider.
 function applyRotation(value) {
   const d = value - lastSliderValue;
   lastSliderValue = value;
   if (!d) return;
-  for (const stem of selectedStems) {
-    azim[stem] = wrap180((azim[stem] || 0) + d);
-    sendStem(stem);
-  }
+  rotateArmedBy(d);
   val.textContent = Math.round(value) + '°';
   refreshCards(); requestRadar();
 }
@@ -1053,7 +1928,7 @@ $('muteNoneBtn').addEventListener('click', () => { ALL_STEMS.forEach(s => setMut
 $('muteAllBtn').addEventListener('click', () => { ALL_STEMS.forEach(s => setMuted(s, true, true)); buzz(15); });
 slider.addEventListener('input', () => applyRotation(Number(slider.value)));
 
-/* ---------------- phone motion ---------------- */
+/* ---------------- phone motion (js/sensor.js) ---------------- */
 
 let wakeLock = null, wantWakeLock = false;
 async function requestWakeLock() {
@@ -1066,16 +1941,46 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function releaseWakeLockIfUnused() {
-  wantWakeLock = motionOn || hand.running;
+  wantWakeLock = phoneTurn.bound || hand.running;
   if (!wantWakeLock && wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
 }
 
-// The button toggles. Turning it on waits for a first real reading: a
-// desktop browser happily accepts the listener and then never fires it,
-// which left the button saying "Motion Active" over a dead sensor.
-let motionOn = false, motionSeen = false, motionProbe = null;
+const phoneTurn = new SSPhoneTurn();
+const sensorOptions = $('sensorOptions'), sensorModeRow = $('sensorModeRow'), phoneInvertRow = $('phoneInvertRow');
+const turnCalBtn = $('turnCalBtn'), turnCalOut = $('turnCalOut'), sensorDbg = $('sensorDbg');
+let motionProbe = null;
+phoneTurn.onTurn = (turn) => { slider.value = turn; applyRotation(turn); };
+phoneTurn.onReading = (text) => { sensorDbg.textContent = text; };
+// The first real reading: a desktop browser happily accepts the listener
+// and then never fires it, so the button only claims "active" after one.
+phoneTurn.onFirst = () => {
+  lastSliderValue = Number(slider.value);   // carry on from the slider's rotation
+  sensorBtn.textContent = 'Motion Active (tap to turn off)';
+  wantWakeLock = true; requestWakeLock();
+  sensorOptions.hidden = false;
+  buzz([40, 40, 40]);
+};
+
+function showSensorOptions() {
+  setSegActive(sensorModeRow, phoneTurn.useAbsolute ? 1 : 0);
+  sensorModeRow.querySelector('[data-value="1"]').disabled = !phoneTurn.absoluteAvailable;
+  setSegActive(phoneInvertRow, phoneTurn.invert ? 1 : 0);
+  turnCalOut.textContent = phoneTurn.scaleText();
+}
+bindSegRow(sensorModeRow, (v) => { phoneTurn.setAbsolute(v === 1); showSensorOptions(); buzz(15); });
+bindSegRow(phoneInvertRow, (v) => { phoneTurn.setInvert(v === 1); showSensorOptions(); buzz(15); });
+turnCalBtn.addEventListener('click', () => {
+  if (!phoneTurn.bound) { toast('Turn motion on first'); return; }
+  const text = phoneTurn.calibrate();
+  turnCalBtn.textContent = phoneTurn.calStart === null ? 'Calibrate 360°' : 'Finish (after 1 full turn)';
+  turnCalOut.textContent = text;
+  if (phoneTurn.calStart === null) { lastSliderValue = 0; slider.value = 0; val.textContent = '0°'; }
+  buzz(30);
+});
+$('turnCalResetBtn').addEventListener('click', () => { turnCalOut.textContent = phoneTurn.resetCalibration(); turnCalBtn.textContent = 'Calibrate 360°'; });
+
 sensorBtn.addEventListener('click', async () => {
-  if (motionOn) { unbindOrientation(); toast('Motion off - the stems stay where they are'); return; }
+  if (phoneTurn.bound) { unbindOrientation(); toast('Motion off - the stems stay where they are'); return; }
   if (!window.isSecureContext) {
     alert('Motion sensors need an https:// page (or localhost). Open this page over https to use phone rotation; the dials and slider still work.');
     return;
@@ -1092,13 +1997,13 @@ sensorBtn.addEventListener('click', async () => {
 });
 
 function bindOrientation() {
-  motionOn = true; motionSeen = false;
-  window.addEventListener('deviceorientation', handleOrientation);
+  phoneTurn.bind();
   sensorBtn.classList.add('active');
   sensorBtn.textContent = 'Motion: waiting for sensor...';
+  showSensorOptions();
   clearTimeout(motionProbe);
   motionProbe = setTimeout(() => {
-    if (motionOn && !motionSeen) {
+    if (phoneTurn.bound && !phoneTurn.seen) {
       unbindOrientation();
       toast('No motion sensor found on this device - use the rotate slider, the dials or hand tracking instead.', 4200);
     }
@@ -1106,40 +2011,22 @@ function bindOrientation() {
 }
 
 function unbindOrientation() {
-  motionOn = false;
+  phoneTurn.unbind();
   clearTimeout(motionProbe);
-  window.removeEventListener('deviceorientation', handleOrientation);
   sensorBtn.classList.remove('active');
   sensorBtn.textContent = 'Enable Motion';
+  sensorDbg.textContent = '';
+  turnCalBtn.textContent = 'Calibrate 360°';
   releaseWakeLockIfUnused();
 }
 
 calibrateBtn.addEventListener('click', () => {
-  zeroAlpha = lastRawAlpha;
+  phoneTurn.zero();
   lastSliderValue = 0;
   slider.value = 0;
   val.textContent = '0°';
   buzz(50);
 });
-
-function handleOrientation(e) {
-  if (e.alpha === null) return;
-  if (!motionSeen) {
-    // Anchor to wherever the phone points now (keeping the slider's
-    // current rotation), instead of the absolute alpha, which spun every
-    // armed stem by the phone's arbitrary heading the moment motion began.
-    motionSeen = true;
-    zeroAlpha = e.alpha - lastSliderValue;
-    sensorBtn.textContent = 'Motion Active (tap to turn off)';
-    wantWakeLock = true; requestWakeLock();
-    buzz([40, 40, 40]);
-  }
-  lastRawAlpha = e.alpha;
-  let delta = (e.alpha - zeroAlpha + 360) % 360;
-  if (delta > 180) delta -= 360;
-  slider.value = delta;
-  applyRotation(delta);
-}
 
 /* ---------------- hand tracking (camera) ---------------- */
 
@@ -1148,13 +2035,11 @@ function handleOrientation(e) {
 // around your head, up in the frame is in front, down is behind. Reach
 // scales how far a hand has to travel. Two gesture modes:
 //   0 pinch-to-grab: a pinch that starts near a stem's dot picks that stem
-//     up; it follows the hand until release. A pinch in empty space rotates
-//     the whole armed group by the hand's movement, like the slider. Each
-//     hand grabs independently.
+//     up; it follows the hand until release (placing it, like a dial). A
+//     pinch in empty space rotates the whole armed group by the hand's
+//     movement, like the slider. Each hand grabs independently.
 //   1 open-hand steers: the first hand's movement rotates the armed group
 //     while it is open; a fist freezes it (and re-anchors on reopen).
-// Positions go in through the same path as a dial drag (azim + sendStem),
-// so fft/preset blending and smoothing still apply downstream.
 const handBtn = $('handBtn'), handPanel = $('handPanel'), handStatus = $('handStatus');
 const handVideo = $('handVideo'), handCanvas = $('handCanvas'), camBox = $('camBox');
 const handModeRow = $('handModeRow'), handModeHint = $('handModeHint');
@@ -1176,17 +2061,12 @@ function handToRadar(h) {
 function nearestStemTo(az) {
   let best = null, bestD = GRAB_RADIUS_DEG;
   for (const s of ALL_STEMS) {
-    if (mutedStems.has(s)) continue;
+    if (mutedStems.has(s) || !stemShown(s)) continue;
     if (handState.some(st => st.grab === s)) continue; // the other hand has it
     const d = Math.abs(wrap180(motion.stems[s].effective - az));
     if (d < bestD) { bestD = d; best = s; }
   }
   return best;
-}
-
-function rotateArmedBy(d) {
-  if (!d) return;
-  for (const stem of selectedStems) { azim[stem] = wrap180((azim[stem] || 0) + d); sendStem(stem); }
 }
 
 function handleHands(hands) {
@@ -1203,16 +2083,14 @@ function handleHands(hands) {
         buzz(10);
       } else if (h.pinch && st.grab) {
         if (st.grab === 'group') rotateArmedBy(wrap180(az - st.lastAz));
-        else { azim[st.grab] = az; sendStem(st.grab); }
+        else placeStem(st.grab, Math.round(az));
         st.lastAz = az;
       } else if (!h.pinch && st.grab) {
         st.grab = null;
       }
     }
   } else {
-    // The first hand steers, whichever tracker slot it is in - hands keep
-    // their slot now, so a lone hand can be slot 1, and reading slot 0's
-    // state for it reset the anchor every frame and never turned anything.
+    // The first hand steers, whichever tracker slot it is in.
     const h = hands[0];
     if (h) {
       const st = handState[h.index];
@@ -1297,8 +2175,6 @@ $('handFlipBtn').addEventListener('click', async () => {
   const flip = $('handFlipBtn');
   if (!hand.running) { toast('Start hand tracking first'); return; }
   flip.disabled = true;
-  // Most laptops have one camera; the error used to vanish as an unhandled
-  // rejection while the button still claimed tracking was on.
   try { await hand.switchCamera(); }
   catch (e) { toast('Could not switch camera: ' + (e.message || e.name) + (hand.running ? ' - staying on this one' : ''), 4000); }
   flip.disabled = false;
@@ -1329,4 +2205,10 @@ document.addEventListener('keydown', (e) => {
 /* ---------------- init ---------------- */
 
 buildCards();
-updateStemLabel(); refreshCards(); drawRadar(); renderSongs(); refreshTransportButtons();
+applyPreset(0);
+updateStemLabel(); refreshCards(); drawRadar(); renderSongs(); refreshTransportButtons(); showOutput();
+// Reconnect to the stem splitter only where it has been used before: on a
+// first visit the browser would otherwise ask about "local network access"
+// before the user knows there is a helper at all.
+refreshHelperUi(); refreshLed();
+if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); refreshLed(); });

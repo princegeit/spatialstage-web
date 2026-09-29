@@ -140,6 +140,8 @@
   .song-remove:hover { color: #f77; background: rgba(255,80,80,0.12); }
   .spin { width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  #songHint:empty { display: none; }
+  .song-mark.err { color: #f77; }
   .empty-songs { color: #8a8a8a; font-size: 0.72rem; text-align: center; padding: 6px 0 2px; line-height: 1.5; }
 
   /* --- transport --- */
@@ -193,6 +195,57 @@
            pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 20; box-shadow: 0 8px 28px rgba(0,0,0,0.55); }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+  /* --- stem splitter (SpatialStage Helper) --- */
+  .helper-bar { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 10px; border-radius: 9px;
+                background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); font-size: 0.72rem; color: #aaa; min-width: 0; }
+  .helper-bar[hidden] { display: none; }
+  .helper-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+  .helper-dot.ready { background: #0f8; box-shadow: 0 0 6px #0f8; }
+  .helper-dot.busy { background: #ffb020; box-shadow: 0 0 6px #ffb020; animation: rec-pulse 1.2s infinite; }
+  .helper-dot.missing { background: #f66; }
+  .helper-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .helper-open { flex: none; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16); color: #ddd; border-radius: 7px;
+                 padding: 5px 10px; font-size: 0.66rem; font-weight: 700; cursor: pointer; }
+  .helper-open:hover { background: rgba(255,255,255,0.13); }
+  /* Per-song split state, in the row's duration slot. */
+  .song-item.splitting { background: linear-gradient(90deg, rgba(255,176,32,0.18) var(--s, 0%), transparent var(--s, 0%)); }
+  .song-split { flex: none; background: none; border: 1px solid transparent; color: #8a8a8a; font-size: 0.66rem; font-weight: 700;
+                padding: 2px 5px; border-radius: 6px; cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .song-split:hover { border-color: rgba(255,176,32,0.5); color: #ffb020; }
+  .song-split.active { color: #ffb020; }
+  .song-split.failed { color: #f77; }
+
+  #helperDialog { background: #181818; color: #ddd; border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 18px 20px;
+                  width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+                  -webkit-user-select: text; user-select: text; }
+  #helperDialog::backdrop { background: rgba(0,0,0,0.6); }
+  #helperDialog * { -webkit-user-select: text; user-select: text; }
+  .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .dlg-head h2 { font-size: 1.05rem; margin: 0; letter-spacing: 0.02em; }
+  .helper-status { font-size: 0.78rem; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.05); margin-bottom: 12px; color: #bbb; }
+  .helper-status.ready { background: rgba(0,255,136,0.1); color: #0f8; }
+  .helper-status.missing { background: rgba(255,90,90,0.1); color: #f99; }
+  #helperDialog p { font-size: 0.8rem; line-height: 1.55; color: #bbb; margin: 0 0 10px; }
+  #helperDialog section[hidden] { display: none; }
+  .steps { font-size: 0.8rem; line-height: 1.55; color: #bbb; padding-left: 20px; margin: 0 0 12px; }
+  .steps li { margin-bottom: 8px; }
+  .dl-btn { display: inline-block; background: #0f8; color: #111; font-weight: 800; text-decoration: none; border-radius: 9px; padding: 8px 14px; margin: 2px 8px 2px 0; }
+  .dl-btn:hover { background: #3fffa4; }
+  .muted { color: #8a8a8a; font-size: 0.72rem; }
+  .small { font-size: 0.68rem; }
+  .dlg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .dlg-btn { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.18); color: #ddd; border-radius: 8px; padding: 7px 12px;
+             font-size: 0.72rem; font-weight: 700; cursor: pointer; }
+  .dlg-btn:hover { background: rgba(255,255,255,0.13); }
+  .check-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #ccc; margin: 4px 0 6px; cursor: pointer; }
+  .check-row input { accent-color: #0f8; width: 16px; height: 16px; }
+  .library { max-height: 240px; overflow: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }
+  .lib-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 0.76rem; border-bottom: 1px solid rgba(255,255,255,0.05); min-width: 0; }
+  .lib-item:last-child { border-bottom: none; }
+  .lib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ccc; }
+  .lib-meta { flex: none; color: #8a8a8a; font-size: 0.66rem; font-variant-numeric: tabular-nums; }
+  .lib-empty { padding: 12px; font-size: 0.74rem; color: #8a8a8a; text-align: center; }
+
   @media (max-width: 470px) {
     .fader { width: 26px; }
     .card-row { gap: 7px; }
@@ -202,6 +255,46 @@
   /* --- per-stem level meter, under the card head --- */
   .level { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.07); margin: -4px 2px 8px; overflow: hidden; }
   .level-fill { height: 100%; width: 0%; background: currentColor; opacity: 0.85; transition: width 60ms linear; }
+  /* --- drum-kit parts: shown only for a song that has them --- */
+  .stem-note { margin-left: auto; font-size: 0.56rem; font-weight: 800; letter-spacing: 0.04em; color: #8a8a8a; text-transform: uppercase; }
+  #stemGrid.no-parts .stem-card.part { display: none; }
+  .stem-card.absent { opacity: 0.4; }
+  /* --- LED button + panel (Pd rig's LED panel) --- */
+  .led-btn { display: flex; align-items: center; justify-content: center; gap: 5px; }
+  .led-btn .swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #333; }
+  .led-btn.open { background: rgba(255,255,255,0.16); }
+  .led-btn[hidden] { display: none; }
+  #ledPanel, #outputPanel { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); }
+  #ledPanel[hidden] { display: none; }
+  input[type=color] { width: 44px; height: 28px; padding: 0; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; background: none; }
+  .seg-btn.off.active { background: rgba(255,255,255,0.1); border-color: #888; color: #ccc; }
+  /* --- stem setups (presets) --- */
+  #presetPanel { margin: 4px 0 12px; }
+  .list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 4px; }
+  .list-head .field-label { margin: 0; }
+  .link-btn { background: none; border: none; color: #0f8; font-size: 0.66rem; cursor: pointer; padding: 2px 0; text-decoration: underline; }
+  .link-btn[hidden] { display: none; }
+  #presetSel { flex: 1; min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 7px; padding: 7px; font-size: 0.78rem; }
+  #presetSel.custom { color: #ffcc33; border-color: rgba(255,204,51,0.5); }
+  #presetName { flex: 1; min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 7px; padding: 8px; font-size: 0.78rem; -webkit-user-select: text; user-select: text; }
+  #presetHint { text-align: left; }
+  /* --- playlist order --- */
+  .song-handle { flex: none; color: #666; cursor: grab; touch-action: none; padding: 0 2px; font-size: 0.8rem; letter-spacing: -2px; }
+  .song-item.drag-src { opacity: 0.4; }
+  .song-item.drop-before { box-shadow: inset 0 2px 0 #0f8; }
+  .song-item.drop-after { box-shadow: inset 0 -2px 0 #0f8; }
+  .song-preset { flex: none; font-size: 0.54rem; font-weight: 800; color: #ffcc33; border: 1px solid rgba(255,204,51,0.4); border-radius: 4px; padding: 1px 4px; }
+  .song-kit { flex: none; font-size: 0.54rem; font-weight: 800; color: #ff4d4d; border: 1px solid rgba(255,77,77,0.4); border-radius: 4px; padding: 1px 4px; }
+  /* --- LED strip setup --- */
+  details.setup { margin-top: 10px; font-size: 0.72rem; color: #aaa; }
+  details.setup[hidden] { display: none; }
+  details.setup summary { cursor: pointer; color: #8a8a8a; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+  .led-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; margin-top: 8px; }
+  .led-grid input[type=text], .led-grid input[type=number] { min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.78rem; -webkit-user-select: text; user-select: text; }
+  .led-grid input[type=range] { margin-top: 0; }
+  .led-grid label { font-size: 0.66rem; color: #999; }
+  #sensorOptions[hidden] { display: none; }
+  #sensorDbg { min-height: 1em; }
   /* --- hand tracking --- */
   #handBtn { background: #333; color: #eee; }
   #handBtn.active { background: #ffcc33; color: #111; }
@@ -266,11 +359,44 @@
       <button id="muteAllBtn">Mute All</button>
     </div>
 
+    <div id="outputPanel">
+      <div class="field-label">Output &mdash; headphones (stereo) or four speakers (a 4-channel sound card)</div>
+      <div class="seg-row" id="quadOutputRow">
+        <button class="seg-btn active" data-value="0">Headphones</button>
+        <button class="seg-btn" data-value="1">Quad speakers</button>
+      </div>
+      <div class="field-label">Left / right &mdash; sound and LED strip together (swap if the room feels back-to-front)</div>
+      <div class="seg-row" id="lrSwapRow">
+        <button class="seg-btn active" data-value="0">Normal</button>
+        <button class="seg-btn" data-value="1">Swap L &harr; R</button>
+      </div>
+    </div>
+
+    <div id="ledPanel" hidden>
+      <div class="spatial-title"><span>LED &mdash; <span id="ledStemName"></span></span><button id="ledCloseBtn" class="close-btn" title="Close" aria-label="Close LED panel">&times;</button></div>
+      <div class="seg-row" id="ledOnRow">
+        <button class="seg-btn" data-value="1">Show</button>
+        <button class="seg-btn" data-value="0">Hide</button>
+      </div>
+      <div class="field-label">Colour</div>
+      <div class="weight-row"><input type="color" id="ledColor"><output id="ledColorHex"></output></div>
+      <div class="field-label">Width (degrees of the ring the patch spans either side of the stem)</div>
+      <div class="weight-row"><label>Width</label><input type="range" id="ledSpread" min="1" max="90" step="1"><output id="ledSpreadOut"></output></div>
+      <div class="field-label">Tail (seconds the trail behind a moving stem takes to fade &mdash; 0 = none)</div>
+      <div class="weight-row"><label>Tail</label><input type="range" id="ledTail" min="0" max="3" step="0.1"><output id="ledTailOut"></output></div>
+    </div>
+
     <div id="spatialPanel" hidden>
       <div class="spatial-title"><span>SPATIAL &mdash; <span id="spatialStemName"></span></span><button id="spatialCloseBtn" class="close-btn" title="Close" aria-label="Close spatial panel">&times;</button></div>
 
       <div class="field-label">Smoothing (final output, any source &mdash; left = smooth/gliding, right = instant/jittery)</div>
-      <div class="weight-row"><label>Amount</label><input type="range" id="smoothingSlider" min="0.02" max="1" step="0.01"><output id="smoothingOut"></output></div>
+      <div class="seg-row" id="smoothingModeRow">
+        <button class="seg-btn" data-value="0">Fixed</button>
+        <button class="seg-btn" data-value="1">Louder = snappier</button>
+        <button class="seg-btn" data-value="2">Louder = smoother</button>
+      </div>
+      <div class="weight-row"><label id="smoothingLabel">Amount</label><input type="range" id="smoothingSlider" min="0.02" max="1" step="0.01"><output id="smoothingOut"></output></div>
+      <div class="hint left" id="smoothingHint" hidden></div>
 
       <div class="field-label">Blend mode</div>
       <div class="seg-row" id="blendModeRow">
@@ -287,53 +413,47 @@
         <div class="weight-row"><label>Preset</label><input type="range" id="w3" min="0" max="1" step="0.01"><output id="w3Out"></output></div>
       </div>
 
+      <!-- "Off" is a real choice here: a source whose blend weight is 0
+           contributes nothing, so no mode of it is highlighted. Picking a
+           mode turns the source on; Off sets its weight to 0. -->
       <div class="field-label">FFT source (drives azimuth from this stem's own audio)</div>
       <div class="seg-row" id="fftModeRow">
+        <button class="seg-btn off" data-value="-1">Off</button>
         <button class="seg-btn" data-value="0">Pitch</button>
         <button class="seg-btn" data-value="1">Onset</button>
         <button class="seg-btn" data-value="2">Band</button>
         <button class="seg-btn" data-value="3">Precalc</button>
       </div>
 
-      <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
-      <div class="seg-row" id="fftSrcRow">
-        <button class="seg-btn" data-value="0">Vocals</button>
-        <button class="seg-btn" data-value="1">Drums</button>
-        <button class="seg-btn" data-value="2">Bass</button>
-        <button class="seg-btn" data-value="3">Guitar</button>
-        <button class="seg-btn" data-value="4">Piano</button>
-        <button class="seg-btn" data-value="5">Other</button>
+      <div id="fftSrcBlock">
+        <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
+        <div class="seg-row" id="fftSrcRow"><!-- one button per stem, built from the stem list --></div>
       </div>
 
       <div class="field-label">Preset motion</div>
       <div class="seg-row" id="presetModeRow">
+        <button class="seg-btn off" data-value="-1">Off</button>
         <button class="seg-btn" data-value="0">Circle</button>
         <button class="seg-btn" data-value="1">Sine</button>
         <button class="seg-btn" data-value="2">Tempo-Sync</button>
       </div>
-      <div class="weight-row"><label>Rate</label><input type="range" id="presetRate" min="0" max="1" step="0.01"><output id="presetRateOut"></output></div>
-
-      <div class="field-label">Tempo source (for Tempo-Sync motion)</div>
-      <div class="seg-row" id="tempoSourceRow">
-        <button class="seg-btn" data-value="0">Manual</button>
-        <button class="seg-btn" data-value="1">MIDI Clock</button>
-        <button class="seg-btn" data-value="2">Link</button>
+      <div id="presetRateBlock">
+        <div class="weight-row"><label>Rate</label><input type="range" id="presetRate" min="0" max="1" step="0.01"><output id="presetRateOut"></output></div>
       </div>
-      <div class="weight-row"><label>BPM</label><input type="number" id="spatialBpm" min="20" max="300" step="1"></div>
-      <div class="hint left" id="tempoHint" hidden></div>
 
-      <div class="field-label">Base azimuth</div>
+      <div id="tempoBlock">
+        <div class="field-label">Tempo source (for Tempo-Sync motion)</div>
+        <div class="seg-row" id="tempoSourceRow">
+          <button class="seg-btn" data-value="0">Manual</button>
+          <button class="seg-btn" data-value="1">MIDI Clock</button>
+          <button class="seg-btn" data-value="2">Link</button>
+        </div>
+        <div class="weight-row"><label>BPM</label><input type="number" id="spatialBpm" min="20" max="300" step="1"></div>
+        <div class="hint left" id="tempoHint" hidden></div>
+      </div>
+
+      <div class="field-label">Position (reference point &mdash; also set by dragging the dial)</div>
       <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
-
-      <div class="field-label">Preset file (per song)</div>
-      <div class="preset-row">
-        <button id="presetSaveBtn">Save</button>
-        <button id="presetLoadBtn">Load</button>
-        <button id="presetExportBtn" title="Download all saved presets as JSON">Export</button>
-        <button id="presetImportBtn" title="Add presets from a JSON file exported earlier">Import</button>
-      </div>
-      <input type="file" id="presetFileInput" accept=".json,application/json">
-      <div class="hint">Save/load covers all 6 stems at once (dial positions, levels, mutes, arming and motion), stored in this browser under the current song's name.</div>
     </div>
   </section>
 
@@ -361,6 +481,25 @@
     <div class="hint">Rotates armed stems together. Drag a dot on the radar, or a dial, to place one stem.</div>
     <button id="sensorBtn" class="action">Enable Motion</button>
     <button id="calibrateBtn" class="action">Zero / Recenter</button>
+    <div id="sensorOptions" hidden>
+      <div class="field-label">Phone turn direction (swap if turning right sends the sound left)</div>
+      <div class="seg-row" id="phoneInvertRow">
+        <button class="seg-btn" data-value="0">Normal</button>
+        <button class="seg-btn" data-value="1">Inverted</button>
+      </div>
+      <div class="field-label">Sensor (Compass: same direction always gives the same position; Gyro: smoother, but drifts)</div>
+      <div class="seg-row" id="sensorModeRow">
+        <button class="seg-btn" data-value="1">Compass (absolute)</button>
+        <button class="seg-btn" data-value="0">Gyro (relative)</button>
+      </div>
+      <div class="field-label">Turn calibration (Gyro mode only: this phone's gyro reads a full turn short or long)</div>
+      <div class="preset-row">
+        <button id="turnCalBtn">Calibrate 360&deg;</button>
+        <button id="turnCalResetBtn">Reset</button>
+      </div>
+      <div class="hint" id="turnCalOut"></div>
+      <div class="hint" id="sensorDbg"></div>
+    </div>
     <button id="handBtn" class="action">Hand Tracking (camera)</button>
     <div id="handPanel" hidden>
       <div class="cam mirror" id="camBox">
@@ -401,16 +540,56 @@
       <span class="field-label" id="masterVolLabel">Master 40%</span>
       <input type="range" id="masterVolSlider" min="0" max="1" step="0.01" value="0.4" aria-label="Master volume">
     </div>
+    <div class="mode-row" style="margin-top:0">
+      <span class="field-label">Record as</span>
+      <div class="seg-row" id="recordFormatRow">
+        <button class="seg-btn active" data-value="wav">WAV</button>
+        <button class="seg-btn" data-value="mp3">MP3</button>
+      </div>
+    </div>
     <div class="hint" id="recordStatus" hidden></div>
+    <div id="presetPanel">
+      <div class="list-head">
+        <span class="field-label">Stem setup</span>
+        <button class="link-btn" id="detachBtn" hidden title="Remove this song's attached setup - it will load preset 0 next time">Detach from song</button>
+      </div>
+      <div class="preset-row">
+        <select id="presetSel" title="What the stems are set from - pick a preset to load it" aria-label="Stem setup"></select>
+      </div>
+      <div class="preset-row">
+        <input type="text" id="presetName" maxlength="60" placeholder="Preset name" aria-label="Preset name">
+        <button id="presetNewBtn" title="Save the current setup as a new named preset">Save as new</button>
+      </div>
+      <div class="preset-row">
+        <button id="presetUpdateBtn" title="Overwrite the loaded preset with the current setup">Update</button>
+        <button id="attachBtn" title="Keep the current setup with this song - it will always load with it">Attach to song</button>
+        <button id="presetRevertBtn" title="Discard changes and load it again">Revert</button>
+      </div>
+      <div class="preset-row">
+        <button id="presetExportBtn" title="Download every preset and attached setup as one file - opens on the Pd rig too">Export</button>
+        <button id="presetImportBtn" title="Add presets and song setups from an exported file (this page's or the Pd rig's)">Import</button>
+      </div>
+      <input type="file" id="presetFileInput" accept=".json,application/json">
+      <div class="hint" id="presetHint"></div>
+    </div>
     <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Add songs">
       <strong>Add songs</strong> &mdash; tap or drop files or folders here<br>
-      12-channel show WAV, or separate stems named vocals / drums / bass / guitar / piano / other
+      a show WAV from the Pd rig, or separate stems named vocals / drums / bass / guitar / piano / other (and kick / snare / toms / hihat / ride / crash)
       <br><button type="button" class="linklike" id="folderBtn" hidden>or choose a folder of stems</button>
     </div>
     <input type="file" id="fileInput" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aif,.aiff,audio/*">
     <input type="file" id="folderInput" webkitdirectory multiple>
+    <div class="list-head">
+      <span class="field-label">Playlist &mdash; drag &#8942;&#8942; to reorder</span>
+      <button class="link-btn" id="playlistResetBtn" title="Put the playlist back in A-Z order">Reset A&ndash;Z</button>
+    </div>
     <div id="songList"></div>
-    <div class="hint" id="songHint">&nbsp;</div>
+    <div class="hint" id="songHint"></div>
+    <div class="helper-bar" id="helperBar">
+      <span class="helper-dot" id="helperDot"></span>
+      <span class="helper-text" id="helperText">Split plain songs into stems</span>
+      <button type="button" class="helper-open" id="helperOpenBtn">Set up</button>
+    </div>
     <div class="mode-row">
       <span class="field-label">Panner</span>
       <div class="seg-row" id="panModeRow">
@@ -419,17 +598,88 @@
       </div>
     </div>
     <div class="hint">Pd match reproduces the live rig's pan + inter-aural delay exactly. HRTF uses the browser's head-related response for a more out-of-head image.</div>
+    <details class="setup" id="ledSetup">
+      <summary>LED strip (WLED, through the helper)</summary>
+      <div class="hint left">Lights a WLED strip around you in each stem's direction and colour, like the Pd rig's. Needs SpatialStage Helper 1.1 running on this PC (browsers cannot talk to WLED directly) and WLED's "Receive UDP realtime" on.</div>
+      <div class="led-grid">
+        <label for="ledHost">WLED address</label><input type="text" id="ledHost" placeholder="192.168.1.50" autocomplete="off">
+        <label for="ledCount">LEDs in the ring</label><input type="number" id="ledCount" min="1" max="490">
+        <label for="ledStart">First ring LED</label><input type="number" id="ledStart" min="0" max="489">
+        <label for="ledFront">LED straight ahead</label><input type="number" id="ledFront" min="0">
+        <label for="ledBrightness">Brightness</label><input type="range" id="ledBrightness" min="0" max="1" step="0.05">
+      </div>
+      <div class="field-label">Direction (LED numbers go this way round, seen from above)</div>
+      <div class="seg-row" id="ledDirRow">
+        <button class="seg-btn" data-value="1">Clockwise</button>
+        <button class="seg-btn" data-value="0">Anticlockwise</button>
+      </div>
+      <div class="seg-row" id="ledRunRow">
+        <button class="seg-btn" data-value="1">Strip on</button>
+        <button class="seg-btn" data-value="0">Off</button>
+      </div>
+      <div class="hint left" id="ledStatus"></div>
+    </details>
   </section>
 
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
 
+<dialog id="helperDialog" aria-labelledby="helperTitle">
+  <div class="dlg-head">
+    <h2 id="helperTitle">Stem splitter</h2>
+    <button type="button" class="close-btn" id="helperCloseBtn" aria-label="Close">&times;</button>
+  </div>
+  <div class="helper-status" id="helperStatusLine">Looking for the helper on this PC...</div>
+
+  <section id="helperSetup">
+    <p>A plain song (an MP3, or a WAV of the full mix) plays as one sound. To move the vocals, drums,
+      bass, guitar and piano around you separately, it has to be split into stems first.
+      <strong>SpatialStage Helper</strong> does that on your own PC with Demucs - your songs are never uploaded.</p>
+    <ol class="steps">
+      <li><a class="dl-btn" id="helperDownload" href="helper/SpatialStage-Helper.zip" download>Download the helper</a>
+        <span class="muted">Windows 10/11, 64-bit &middot; Mac and Linux not yet</span></li>
+      <li>Extract the zip and double-click <b>Install SpatialStage Helper.bat</b>. It downloads about 1&nbsp;GB
+        (Python, PyTorch, Demucs and the model) - 5 to 15 minutes, no admin rights needed.</li>
+      <li>Come back here: it connects by itself. If the browser asks to <i>look for and connect to devices on your
+        local network</i>, choose <b>Allow</b> - that is this page talking to the helper on your PC.</li>
+    </ol>
+    <div class="dlg-row">
+      <span class="muted">Already installed?</span>
+      <button type="button" class="dlg-btn" id="helperStartBtn">Start helper</button>
+      <button type="button" class="dlg-btn" id="helperRetryBtn">Check again</button>
+    </div>
+    <p class="muted small">Blocked the browser's question by mistake? Click the icon at the left of the address bar and
+      allow <i>Local network access</i> for this site, then Check again.</p>
+  </section>
+
+  <section id="helperReady" hidden>
+    <label class="check-row"><input type="checkbox" id="helperAuto"> Split plain songs automatically when I add them</label>
+    <div class="field-label">Model</div>
+    <div class="seg-row" id="helperModelRow">
+      <button type="button" class="seg-btn" data-value="htdemucs_6s">6 stems</button>
+      <button type="button" class="seg-btn" data-value="htdemucs">4 stems &middot; faster</button>
+      <button type="button" class="seg-btn" data-value="htdemucs_ft">4 stems &middot; cleanest</button>
+    </div>
+    <div class="hint left" id="helperModelHint"></div>
+    <label class="check-row" id="helperPartsRow"><input type="checkbox" id="helperParts"> <span>Also split drums into kit parts <span class="muted">(kick, snare, toms, hi-hat, ride, crash &mdash; slow: several times the song's length; the first time installs the drum splitter and downloads its ~420 MB model)</span></span></label>
+    <div class="field-label">Your split songs <span id="libraryCount"></span></div>
+    <div class="library" id="libraryList"></div>
+    <div class="hint left">Kept on this PC by the helper - add any of them back to the list without the original file.</div>
+  </section>
+</dialog>
+
+<script src="js/stems.js"></script>
 <script src="js/wav.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/motion.js"></script>
+<script src="js/helper.js"></script>
 <script src="js/songs.js"></script>
 <script src="js/hands.js"></script>
+<script src="js/setups.js"></script>
+<script src="js/sensor.js"></script>
+<script src="js/mp3.js"></script>
+<script src="js/led.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

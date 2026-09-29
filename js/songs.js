@@ -4,53 +4,36 @@
 //   decodeSong(desc, engine)-> { name, sampleRate, stems: { vocals: [L, R], ... } }
 //
 // Decoding is deferred until a song is actually selected because a decoded
-// 12-channel song is ~2 MB per second of audio (float32 x 12 x 44.1 kHz) -
-// a 5-minute track is ~600 MB, which is fine once at a time on a desktop
-// and survivable on a phone, but not multiplied by a whole set list. The
-// descriptor keeps the File handles; the engine drops the previous song's
-// buffers when the next one loads.
+// show file is ~2 MB per second of audio per six stems (float32 x 12 x 44.1
+// kHz) - a 5-minute track is ~600 MB, twice that with drum parts, which is
+// fine once at a time on a desktop and survivable on a phone, but not
+// multiplied by a whole set list. The descriptor keeps the File handles; the
+// engine drops the previous song's buffers when the next one loads.
 //
 // Two shapes are accepted:
-//   1. A 12-channel show WAV from pipeline/auto_stem_pipeline.py - channels
-//      are stem pairs in CHANNEL_ORDER (2i = left, 2i+1 = right).
-//   2. Separate stem files, matched to slots by a stem name appearing in
-//      the filename (Demucs' vocals.wav / drums.wav ..., or "Song - drums.wav",
-//      or a "melody"/"keys" export from any online splitter). Files in one
-//      folder with the same non-stem name are grouped into one song; bare
-//      vocals.wav / drums.wav ... take their folder's name (drop the folder).
-//      Slots with no file stay silent - ROADMAP item 0's bring-your-own-
-//      stems path, done in the browser instead of a script.
+//   1. A show WAV from pipeline/showfile.py - channels are stem pairs in
+//      stems.txt order (2i = left, 2i+1 = right): 12 channels for the six
+//      Demucs stems, 24 once the drums have been split into kit parts.
+//   2. Separate stem files, matched to slots by a stem name in the file
+//      name (SSStems.stemOfName - the same rule the Pd rig's import uses):
+//      Demucs' vocals.wav / drums.wav ..., "Song - drums.wav", a
+//      "melody"/"keys" export from an online splitter, kick/snare/... from a
+//      drum splitter. Files in one folder with the same non-stem name are
+//      grouped into one song; bare vocals.wav / drums.wav ... take their
+//      folder's name (drop the folder). Slots with no file stay silent -
+//      ROADMAP item 0's bring-your-own-stems path, done in the browser.
+//      With kit parts present the drums card plays drums_rest.wav (what the
+//      parts did not catch) - or nothing if there is no leftover, since the
+//      full drums on top of the parts would play the kit twice. Same rule as
+//      pipeline/showfile.py's plan().
 // Anything else (a plain stereo song, no stem name) loads as a single
-// "other" stem, so an un-split track still plays and can still be moved.
+// "other" stem, so an un-split track still plays and can still be moved -
+// until SpatialStage Helper splits it (app.js), which turns the descriptor
+// into kind 'helper': { helperId, stems, file } with the stems fetched from
+// the helper at load time.
 (function () {
-  const STEMS = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'];
-  const ALIASES = {
-    vocals: ['vocals', 'vocal', 'vox', 'voice'],
-    drums: ['drums', 'drum', 'percussion'],
-    bass: ['bass'],
-    guitar: ['guitar', 'gtr'],
-    piano: ['piano', 'keys', 'keyboard', 'melody'],
-    other: ['other', 'others', 'rest', 'instrumental', 'music', 'accompaniment'],
-  };
+  const { STEMS, BASE_STEMS, DRUM_PARTS, LEFTOVER, stemOfName } = SSStems;
 
-  const ALIAS_TO_STEM = {};
-  for (const s of STEMS) for (const a of ALIASES[s]) ALIAS_TO_STEM[a] = s;
-
-  // The stem a filename names, and where that word sits in it. Words are
-  // runs of letters, so "drums" matches in "Song_drums", "song - drums",
-  // "drums2" but "bassoon" does not. The LAST stem word wins: splitters put
-  // the stem at the end ("Other Track - vocals", "1_Song_(Vocals)"), and a
-  // stem word earlier on is usually part of the song title.
-  function stemMatch(filename) {
-    const base = filename.replace(/\.[^.]+$/, '');
-    const re = /[a-z]+/gi;
-    let m, hit = null;
-    while ((m = re.exec(base))) {
-      const stem = ALIAS_TO_STEM[m[0].toLowerCase()];
-      if (stem) hit = { stem, index: m.index, length: m[0].length };
-    }
-    return hit;
-  }
   // Where a file came from: set by the folder-drop walker in app.js, or by
   // a directory picker.
   const pathOf = (file) => file.ssPath || file.webkitRelativePath || '';
@@ -67,7 +50,19 @@
       .replace(/^[\s\-_.,]+|[\s\-_.,]+$/g, '')
       .replace(/\s{2,}/g, ' ');
     const folder = folderOf(file);
-    return { key: pathOf(file).split('/').slice(0, -1).join('/') + '|' + name.toLowerCase(), name: name || folder };
+    return { key: pathOf(file).split('/').slice(0, -1).join('/') + '|' + name.toLowerCase(), name: name || folder, titled: !!name };
+  }
+
+  // Which file plays in each slot of a stem group ({ stem|drums_rest: File }),
+  // following showfile.py: with kit parts, the drums slot is the leftover.
+  function slotFiles(files) {
+    const out = {};
+    const parts = DRUM_PARTS.some((p) => files[p]);
+    for (const s of STEMS) {
+      if (s === 'drums' && parts) { if (files[LEFTOVER]) out.drums = files[LEFTOVER]; }
+      else if (files[s]) out[s] = files[s];
+    }
+    return out;
   }
 
   // Reads just the RIFF header to learn channel count and duration without
@@ -95,37 +90,56 @@
   const AUDIO_EXT = /\.(wav|wave|flac|mp3|m4a|aac|mp4|ogg|oga|opus|webm|aif|aiff|caf)$/i;
   const isAudio = (f) => AUDIO_EXT.test(f.name) || (f.type || '').startsWith('audio/');
 
+  // Stems a show file with this many channels carries: a pair each, in
+  // stems.txt order.
+  const showStems = (channels) => STEMS.slice(0, Math.min(STEMS.length, Math.floor(channels / 2)));
+
   async function scanFiles(files) {
     const songs = [];
     const groups = {};
+    const plain = [];
     for (const f of files) {
       if (!isAudio(f)) continue;
-      const match = stemMatch(f.name);
+      const match = stemOfName(f.name);
       if (match) {
         const g = groupOf(f, match);
-        const grp = groups[g.key] = groups[g.key] || { name: g.name, files: {} };
+        const grp = groups[g.key] = groups[g.key] || { name: g.name, files: {}, all: [], bare: !g.titled };
         // Two files claiming one slot (vocals.wav and vocals.mp3): keep the
         // first rather than silently swapping in whichever came last.
         if (!grp.files[match.stem]) grp.files[match.stem] = f;
+        grp.all.push(f);
         continue;
       }
+      plain.push(f);
+    }
+    // A lone file with a stem word somewhere in its title ("Bass Head.mp3",
+    // "Rest of My Life.flac") is a song, not one stem of a song called
+    // "Head" - it only counts as a stem when it has siblings, or when its
+    // name is nothing but the stem ("vocals.wav").
+    for (const key in groups) {
+      const g = groups[key];
+      if (g.all.length === 1 && !g.bare) { plain.push(g.all[0]); delete groups[key]; }
+    }
+    for (const f of plain) {
       const info = await probeWav(f);
       const name = f.name.replace(/\.[^.]+$/, '');
       if (info && info.channels >= 12) {
-        songs.push({ name, kind: 'show', file: f, duration: info.duration, slots: STEMS.map(() => true) });
+        const has = showStems(info.channels);
+        songs.push({ name, kind: 'show', file: f, duration: info.duration, slots: STEMS.map((s) => has.includes(s)) });
       } else if (info && info.channels === 6) {
-        songs.push({ name, kind: 'show-mono', file: f, duration: info.duration, slots: STEMS.map(() => true) });
+        songs.push({ name, kind: 'show-mono', file: f, duration: info.duration, slots: STEMS.map((s) => BASE_STEMS.includes(s)) });
       } else {
         songs.push({ name, kind: 'single', file: f, duration: info ? info.duration : null, slots: STEMS.map((s) => s === 'other') });
       }
     }
     for (const key in groups) {
       const g = groups[key];
+      const files = slotFiles(g.files);
       // Stems from different files can differ in length; the song lasts as
       // long as the longest one.
       let duration = null;
-      for (const s of STEMS) if (g.files[s]) { const info = await probeWav(g.files[s]); if (info) duration = Math.max(duration || 0, info.duration); }
-      songs.push({ name: g.name || 'Untitled stems', kind: 'stems', files: g.files, duration, slots: STEMS.map((s) => !!g.files[s]) });
+      for (const s of STEMS) if (files[s]) { const info = await probeWav(files[s]); if (info) duration = Math.max(duration || 0, info.duration); }
+      songs.push({ name: g.name || 'Untitled stems', kind: 'stems', files, duration, slots: STEMS.map((s) => !!files[s]) });
     }
     // Pickers and drops hand files over in no particular order.
     return songs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
@@ -166,36 +180,68 @@
     });
   }
 
+  // A pair that is silent from start to end (a drum-part slot of a song
+  // whose parts are all rests, say) is not worth an AudioBuffer.
+  function silent(pair) {
+    for (const ch of pair) for (let i = 0; i < ch.length; i += 7) if (ch[i] !== 0) return false;
+    return true;
+  }
+
+  // One file per stem, from wherever getFile(stem) finds it.
+  async function decodeStems(desc, todo, getFile, engine, report) {
+    const stems = {};
+    let rate = null;
+    for (let k = 0; k < todo.length; k++) {
+      const s = todo[k];
+      report(k / todo.length, s);
+      const f = await getFile(s);
+      const d = await decodeFile(f, engine, (x) => report((k + x) / todo.length, f.name));
+      if (rate === null) rate = d.sampleRate;
+      stems[s] = matchRate(pairFrom(d.channels), d.sampleRate, rate);
+    }
+    report(1, desc.name);
+    return { name: desc.name, sampleRate: rate, stems };
+  }
+
   // onProgress(fraction 0..1, label) - fraction covers the whole song, so a
   // six-file stem set reports one steady bar rather than six resets.
   async function decodeSong(desc, engine, onProgress) {
     const report = (x, label) => { if (onProgress) onProgress(Math.max(0, Math.min(1, x)), label); };
     const stems = {};
     if (desc.kind === 'stems') {
-      let rate = null;
-      const todo = STEMS.filter((s) => desc.files[s]);
-      for (let k = 0; k < todo.length; k++) {
-        const s = todo[k], f = desc.files[s];
-        report(k / todo.length, f.name);
-        const d = await decodeFile(f, engine, (x) => report((k + x) / todo.length, f.name));
-        if (rate === null) rate = d.sampleRate;
-        stems[s] = matchRate(pairFrom(d.channels), d.sampleRate, rate);
+      return decodeStems(desc, STEMS.filter((s) => desc.files[s]), (s) => desc.files[s], engine, report);
+    }
+    // Split by SpatialStage Helper (js/helper.js): the stems live on this
+    // PC's helper, not in the page. If the helper has been closed since,
+    // the song still plays - from the original file, as one sound. With
+    // drum parts, the helper's drums_rest plays on the drums card.
+    if (desc.kind === 'helper') {
+      const parts = DRUM_PARTS.some((p) => desc.stems.includes(p));
+      const fileOf = (s) => (s === 'drums' && parts ? LEFTOVER : s);
+      const todo = STEMS.filter((s) => desc.stems.includes(fileOf(s)));
+      try {
+        return await decodeStems(desc, todo, (s) => SSHelper.stemFile(desc.helperId, fileOf(s)), engine, report);
+      } catch (e) {
+        if (!desc.file) throw new Error(e.message + ' - start SpatialStage Helper to play this song');
+        const d = await decodeFile(desc.file, engine, (x) => report(x, desc.file.name));
+        return { name: desc.name, sampleRate: d.sampleRate, stems: { other: pairFrom(d.channels) }, fallback: e.message };
       }
-      report(1, desc.name);
-      return { name: desc.name, sampleRate: rate, stems };
     }
     report(0, desc.file.name);
     const d = await decodeFile(desc.file, engine, (x) => report(x, desc.file.name));
     report(1, desc.file.name);
     if (d.channels.length >= 12) {
-      STEMS.forEach((s, i) => { stems[s] = [d.channels[2 * i], d.channels[2 * i + 1]]; });
+      showStems(d.channels.length).forEach((s, i) => {
+        const pair = [d.channels[2 * i], d.channels[2 * i + 1]];
+        if (i < BASE_STEMS.length || !silent(pair)) stems[s] = pair;
+      });
     } else if (d.channels.length === 6) {
-      STEMS.forEach((s, i) => { stems[s] = [d.channels[i], d.channels[i]]; });
+      BASE_STEMS.forEach((s, i) => { stems[s] = [d.channels[i], d.channels[i]]; });
     } else {
       stems.other = pairFrom(d.channels);
     }
     return { name: desc.name, sampleRate: d.sampleRate, stems };
   }
 
-  window.SSSongs = { scanFiles, decodeSong, STEMS };
+  window.SSSongs = { scanFiles, decodeSong, STEMS, slotFiles };
 })();
