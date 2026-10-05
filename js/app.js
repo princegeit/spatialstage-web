@@ -2128,14 +2128,26 @@ function bindOrientation() {
   sensorBtn.textContent = 'Phone motion: waiting for sensor...';
   showSensorOptions();
   clearTimeout(motionProbe);
-  motionProbe = setTimeout(() => {
-    if (phoneTurn.bound && !phoneTurn.seen) {
-      motionBlocked = true;
-      unbindOrientation();
-      sensorBtn.textContent = 'No motion sensor found on this device';
-      toast('No motion sensor found on this device - use the rotate slider, the dials or hand tracking instead.', 4200);
-    }
-  }, 2500);
+  motionProbe = setTimeout(probeMotion, 3000);
+}
+
+// No reading yet. Many phones have the plain orientation sensor but not the
+// compass-fused "absolute" one, so that stream never fires: try the gyro
+// (relative) stream once before deciding there is no sensor at all.
+function probeMotion() {
+  if (!phoneTurn.bound || phoneTurn.seen) return;
+  if (phoneTurn.useAbsolute) {
+    phoneTurn.useAbsolute = false;   // not saved: it is a fallback, not a choice
+    phoneTurn.bind();
+    showSensorOptions();
+    sensorBtn.textContent = 'Phone motion: no compass data, trying the gyro...';
+    motionProbe = setTimeout(probeMotion, 3000);
+    return;
+  }
+  motionBlocked = true;
+  unbindOrientation();
+  sensorBtn.textContent = 'No motion data received - allow Motion sensors for this site in the browser settings, then tap the page';
+  toast('No motion data from this device - allow "Motion sensors" in the browser site settings, or use the rotate slider / dials.', 5200);
 }
 
 function unbindOrientation() {
