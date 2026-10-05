@@ -2470,6 +2470,49 @@ function syncSources() {
 document.addEventListener('pointerdown', () => { motionBlocked = false; handBlocked = false; syncSources(); });
 setInterval(syncSources, 1000);
 
+/* ---------------- phone as remote (through the bridge) ---------------- */
+
+// Open this page from the bridge (https://<PC>:8443/app/) and the phone - its browser, or the
+// SpatialStage Rig app with the screen off - can steer the stems from the bridge's own rig
+// page: the bridge keeps each stem's phone offset (phoneRotate) and this page follows it.
+// Which stems move (armed, set to Phone) is decided on the phone. Zero / Centre there puts the
+// offsets back to 0. Served from anywhere else (GitHub Pages, file) there is no bridge: nothing
+// happens here.
+(function () {
+  if (!/^\/app(\/|$)/.test(location.pathname)) return;
+  const status = $('remoteStatus');
+  let ws = null, last = null, retry = null;
+  function show(text) { status.hidden = false; status.textContent = text; }
+  function connect() {
+    clearTimeout(retry);
+    try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host); }
+    catch (e) { retry = setTimeout(connect, 3000); return; }
+    show('Phone remote: connecting to the bridge...');
+    ws.onopen = () => show('Phone remote: connected. Open the bridge address on your phone (or the Rig app) and turn a stem to Phone.');
+    ws.onclose = () => { show('Phone remote: bridge not reachable, retrying...'); last = null; retry = setTimeout(connect, 3000); };
+    ws.onerror = () => {};
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type !== 'state' || !msg.phoneRotate) return;
+      const now = msg.phoneRotate;
+      if (last) {
+        let moved = false;
+        for (const stem of ALL_STEMS) {
+          const v = now[stem];
+          if (typeof v !== 'number' || v === last[stem]) continue;
+          phone[stem] = wrap180(v);
+          motion.setPhone(stem, Math.round(phone[stem]));
+          moved = true;
+        }
+        if (moved) { refreshCards(); requestRadar(); }
+      }
+      last = Object.assign({}, now);   // the first snapshot only records where the phone offsets are
+    };
+  }
+  connect();
+})();
+
 // Dim: a black cover that keeps the page running and the screen awake, so
 // phone control carries on while it looks switched off.
 const dimOverlay = $('dimOverlay');
