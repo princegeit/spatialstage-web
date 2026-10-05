@@ -180,6 +180,10 @@
   #dimOverlay { position: fixed; inset: 0; z-index: 1000; background: #000; display: flex; align-items: flex-end; justify-content: center;
                 padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px)); color: #262626; font-size: 0.8rem; touch-action: manipulation; }
   #dimOverlay[hidden] { display: none; }
+  .pair-qr { background: #fff; border-radius: 10px; padding: 6px; width: min(100%, 360px); margin: 8px auto; }
+  .pair-qr svg { display: block; width: 100%; height: auto; }
+  .pair-qr[hidden] { display: none; }
+  .pair-video { width: min(100%, 360px); border-radius: 10px; background: #000; display: block; margin: 8px auto; }
   .pair-code { width: 100%; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 8px; font: 0.68rem/1.35 ui-monospace, Consolas, monospace; word-break: break-all; resize: vertical; -webkit-user-select: text; user-select: text; }
   #sensorBtn, #handBtn { color: #888; font-size: 0.72rem; text-align: center; margin: 8px 0 2px; }
   #sensorBtn.active { color: #0f8; }
@@ -629,10 +633,14 @@
     <button id="pairBtn" class="action" title="Steer this page from a phone - no bridge needed">Pair a phone (remote motion)</button>
     <div id="pairBox" hidden>
       <div class="field-label">1 &middot; Send this code to the phone and paste it there. On the phone open <a href="remote.html" target="_blank" rel="noopener" style="color:#0f8">remote.html</a> in its browser, or the SpatialStage Rig app &rarr; "Control a web app"</div>
-      <textarea id="pairOffer" class="pair-code" readonly rows="4" spellcheck="false"></textarea>
+      <div id="pairQr" class="pair-qr" hidden></div>
+      <div class="hint">Or scan this with the phone's camera (it opens remote.html with the code filled in), or in the Rig app: Control a web app &rarr; Scan.</div>
+      <textarea id="pairOffer" class="pair-code" readonly rows="3" spellcheck="false"></textarea>
       <div class="seg-row"><button id="pairCopyBtn" class="seg-btn">Copy code</button></div>
-      <div class="field-label">2 &middot; Paste the phone's reply here</div>
-      <textarea id="pairAnswer" class="pair-code" rows="4" spellcheck="false" autocomplete="off"></textarea>
+      <div class="field-label">2 &middot; The phone shows a reply: scan it with this computer's camera, or paste it here</div>
+      <div class="seg-row"><button id="pairScanBtn" class="seg-btn">Scan the phone's QR (camera)</button></div>
+      <video id="pairVideo" class="pair-video" playsinline muted hidden></video>
+      <textarea id="pairAnswer" class="pair-code" rows="3" spellcheck="false" autocomplete="off"></textarea>
       <div class="seg-row"><button id="pairConnectBtn" class="seg-btn active">Connect</button></div>
       <div class="hint" id="pairStatus"></div>
     </div>
@@ -821,6 +829,9 @@
 <script src="js/wav.js"></script>
 <script src="js/curves.js"></script>
 <script src="js/pair.js"></script>
+<script src="js/vendor/qrcode-generator.js"></script>
+<script src="js/vendor/jsQR.js"></script>
+<script src="js/qr.js"></script>
 <script src="js/beats.js"></script>
 <script src="js/roles.js"></script>
 <script src="js/engine.js"></script>

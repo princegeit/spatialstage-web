@@ -29,6 +29,7 @@
   .seg button { flex: 1; padding: 9px 4px; font-size: 0.8rem; color: #999; }
   .seg button.on { color: #0f8; border-color: rgba(0,255,136,0.5); background: rgba(0,255,136,0.1); }
   [hidden] { display: none !important; }
+  #replyQr svg { display: block; width: 100%; height: auto; }
   #dim { position: fixed; inset: 0; background: #000; z-index: 10; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 28px; color: #262626; font-size: 0.8rem; }
 </style>
 </head>
@@ -40,10 +41,14 @@
   <div id="pairing">
     <div class="step">1 &middot; Paste the code from the PC</div>
     <textarea id="offer" placeholder="On the PC, open the web app, Control window &rarr; Pair a phone, copy the code and paste it here" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <div class="row"><button id="scanBtn">Scan the PC&rsquo;s QR</button></div>
+    <video id="scanVideo" playsinline muted hidden style="width:100%;border-radius:10px;background:#000;margin-top:8px"></video>
     <button class="main" id="pairBtn">Make my reply code</button>
 
     <div id="replyBox" hidden>
       <div class="step">2 &middot; Send this reply back to the PC</div>
+      <div id="replyQr" hidden style="background:#fff;border-radius:10px;padding:6px;width:min(100%,360px);margin:8px auto"></div>
+      <div class="hint">Show this QR to the PC&rsquo;s camera (&ldquo;Scan the phone&rsquo;s QR&rdquo; on the PC page), or copy the code:</div>
       <textarea id="reply" readonly></textarea>
       <div class="row"><button id="copyBtn">Copy reply</button><button id="shareBtn" hidden>Share&hellip;</button></div>
       <div class="hint">Paste it into the PC web app (the "reply" box) and press Connect.</div>
@@ -64,6 +69,9 @@
 
 <script src="js/sensor.js"></script>
 <script src="js/pair.js"></script>
+<script src="js/vendor/qrcode-generator.js"></script>
+<script src="js/vendor/jsQR.js"></script>
+<script src="js/qr.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const native = typeof window.SSNative !== 'undefined';   // inside the SpatialStage Rig app: its service reads the sensor, screen off or on
@@ -122,6 +130,7 @@ $('pairBtn').addEventListener('click', async () => {
     if (!(await startMotion())) { $('pairBtn').disabled = false; return; }
     const reply = await guest.join($('offer').value);
     $('reply').value = reply;
+    try { SSQR.render($('replyQr'), reply); } catch (e) {}
     $('replyBox').hidden = false;
     if (navigator.share) $('shareBtn').hidden = false;
     status('Now copy the reply to the PC and press Connect there.');
@@ -133,6 +142,19 @@ $('copyBtn').addEventListener('click', async () => {
   catch (e) { $('reply').select(); status('Select the reply and copy it.'); }
 });
 $('shareBtn').addEventListener('click', () => { navigator.share({ text: $('reply').value }).catch(() => {}); });
+
+// The PC's QR: scanned here (camera), or arrives as remote.html#<code> from the phone's own camera app.
+let stopScan = null;
+function takeOffer(text) { $('offer').value = SSQR.codeFrom(text); status('Code received. Tap "Make my reply code".', 'ok'); }
+$('scanBtn').addEventListener('click', async () => {
+  const video = $('scanVideo');
+  if (stopScan) { stopScan(); stopScan = null; video.hidden = true; return; }
+  video.hidden = false;
+  status('Point the camera at the QR on the PC...');
+  stopScan = await SSQR.scan(video, (text) => { stopScan = null; video.hidden = true; takeOffer(text); },
+    (e) => { stopScan = null; video.hidden = true; status('Could not open the camera: ' + (e.message || e.name), 'bad'); });
+});
+if (location.hash.length > 20) { takeOffer(location.hash); history.replaceState(null, '', location.pathname); }
 
 $('zeroBtn').addEventListener('click', () => { turn.zero(); lastSent = null; guest.send({ t: 'zero' }); });
 function showModes() {

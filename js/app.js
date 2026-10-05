@@ -2489,7 +2489,11 @@ setInterval(syncSources, 1000);
     box.hidden = false; answerEl.value = ''; offerEl.value = '';
     say('Making a code (a few seconds)...');
     btn.disabled = true;
-    try { offerEl.value = await host.offer(); say('Send the code to the phone, then paste its reply below.'); }
+    try {
+      offerEl.value = await host.offer();
+      try { SSQR.render($('pairQr'), SSQR.remoteUrl(offerEl.value)); } catch (e) { $('pairQr').hidden = true; }
+      say('Scan the QR with the phone (or send it the code), then take its reply below.');
+    }
     catch (e) { say('Could not make a code: ' + (e.message || e)); }
     btn.disabled = false;
   });
@@ -2497,8 +2501,20 @@ setInterval(syncSources, 1000);
     try { await navigator.clipboard.writeText(offerEl.value); say('Code copied.'); }
     catch (e) { offerEl.select(); say('Select the code and copy it.'); }
   });
+  let stopScan = null;
+  $('pairScanBtn').addEventListener('click', async () => {
+    const video = $('pairVideo');
+    if (stopScan) { stopScan(); stopScan = null; video.hidden = true; return; }
+    video.hidden = false;
+    say('Hold the reply QR from the phone up to the camera...');
+    stopScan = await SSQR.scan(video, (text) => {
+      stopScan = null; video.hidden = true;
+      answerEl.value = SSQR.codeFrom(text);
+      $('pairConnectBtn').click();
+    }, (e) => { stopScan = null; video.hidden = true; say('Could not open the camera: ' + (e.message || e.name)); });
+  });
   $('pairConnectBtn').addEventListener('click', async () => {
-    try { await host.accept(answerEl.value); say('Connecting...'); }
+    try { await host.accept(SSQR.codeFrom(answerEl.value)); say('Connecting...'); }
     catch (e) { say(e.message || String(e)); }
   });
   host.onState = (state, connected) => {
