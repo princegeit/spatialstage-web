@@ -82,6 +82,36 @@
     close() { try { if (this.ch) this.ch.close(); if (this.pc) this.pc.close(); } catch (e) {} this.connected = false; }
   }
 
+  // ---- the one-scan handshake: a throwaway "room" on a public relay (ntfy.sh) ----
+  // Only the answer travels through it, once. The room name is random and long, it goes to the
+  // phone inside the QR, and is useless afterwards. If the relay cannot be reached the pages
+  // fall back to carrying the answer by hand (QR / copy), which needs nothing but the pages.
+  const RELAY = 'https://ntfy.sh/';
+  function newRoom() {
+    const a = new Uint8Array(24);
+    crypto.getRandomValues(a);
+    return 'ss' + Array.from(a, (b) => (b % 36).toString(36)).join('');
+  }
+  async function relayPost(room, text) {
+    const r = await fetch(RELAY + room, { method: 'POST', body: text });
+    if (!r.ok) throw new Error('relay answered ' + r.status);
+  }
+  // onMessage(text) for each message in the room, including one posted before this listener
+  // connected (since=all). Resolves with { close } once subscribed, or after 4 s regardless, so
+  // a slow relay never holds up showing the QR.
+  function relayListen(room, onMessage) {
+    let ws = null, closed = false, retry = null;
+    const api = { close() { closed = true; clearTimeout(retry); try { if (ws) ws.close(); } catch (e) {} } };
+    const open = (ready) => {
+      try { ws = new WebSocket(RELAY.replace('https', 'wss') + room + '/ws?since=all'); } catch (e) { ready(); return; }
+      ws.onopen = () => ready();
+      ws.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.event === 'message' && m.message) onMessage(m.message); } catch (e) {} };
+      ws.onclose = () => { if (!closed) retry = setTimeout(() => open(() => {}), 2000); };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    };
+    return new Promise((resolve) => { open(() => resolve(api)); setTimeout(() => resolve(api), 4000); });
+  }
+
   class Host extends Link {
     async offer() {
       this.close();
@@ -110,5 +140,5 @@
     }
   }
 
-  window.SSPair = { Host, Guest, pack, unpack };
+  window.SSPair = { Host, Guest, pack, unpack, newRoom, relayPost, relayListen };
 })();

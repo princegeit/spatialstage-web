@@ -2490,9 +2490,13 @@ setInterval(syncSources, 1000);
     say('Making a code (a few seconds)...');
     btn.disabled = true;
     try {
+      if (room) { room.close(); room = null; }
       offerEl.value = await host.offer();
-      try { SSQR.render($('pairQr'), SSQR.remoteUrl(offerEl.value)); } catch (e) { $('pairQr').hidden = true; }
-      say('Scan the QR with the phone (or send it the code), then take its reply below.');
+      // Listen on a one-time relay room first: the phone drops its reply there after one scan.
+      const name = SSPair.newRoom();
+      room = await SSPair.relayListen(name, (reply) => { host.accept(reply).then(() => say('Reply received - connecting...')).catch(() => {}); });
+      try { SSQR.render($('pairQr'), SSQR.remoteUrl(offerEl.value, name)); } catch (e) { $('pairQr').hidden = true; }
+      say('Scan the QR with the phone - that is all. (If it does not connect, use the reply from the phone below.)');
     }
     catch (e) { say('Could not make a code: ' + (e.message || e)); }
     btn.disabled = false;
@@ -2501,7 +2505,7 @@ setInterval(syncSources, 1000);
     try { await navigator.clipboard.writeText(offerEl.value); say('Code copied.'); }
     catch (e) { offerEl.select(); say('Select the code and copy it.'); }
   });
-  let stopScan = null;
+  let stopScan = null, room = null;
   $('pairScanBtn').addEventListener('click', async () => {
     const video = $('pairVideo');
     if (stopScan) { stopScan(); stopScan = null; video.hidden = true; return; }
@@ -2518,7 +2522,7 @@ setInterval(syncSources, 1000);
     catch (e) { say(e.message || String(e)); }
   });
   host.onState = (state, connected) => {
-    if (connected) { say('Phone connected. Set a stem to Phone and turn.'); live(true); }
+    if (connected) { say('Phone connected. Set a stem to Phone and turn.'); live(true); if (room) { room.close(); room = null; } }
     else if (state === 'failed' || state === 'closed' || state === 'disconnected') { say('Phone disconnected (' + state + ').'); live(false); }
     else say('Connecting (' + state + ')...');
   };

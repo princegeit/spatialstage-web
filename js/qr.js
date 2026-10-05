@@ -25,16 +25,16 @@
   }
   function render(el, text) { el.innerHTML = svgOf(text); el.hidden = false; }
 
-  function remoteUrl(code) {
+  // The link carries the pairing code and, after a '~', the relay room for the automatic reply.
+  function remoteUrl(code, room) {
     const here = typeof location !== 'undefined' ? location : null;
     const local = !here || !/^https?:$/.test(here.protocol) || ['localhost', '127.0.0.1', '[::1]'].includes(here.hostname);
     const base = local ? PUBLIC_REMOTE : new URL('remote.html', here.href).href;
-    return base + '#' + code;
+    return base + '#' + (room ? room + '~' : '') + code;
   }
-  function codeFrom(text) {
-    const t = String(text || '').trim(), i = t.indexOf('#');
-    return (i >= 0 ? t.slice(i + 1) : t).trim();
-  }
+  const afterHash = (text) => { const t = String(text || '').trim(), i = t.indexOf('#'); return (i >= 0 ? t.slice(i + 1) : t).trim(); };
+  function codeFrom(text) { const f = afterHash(text), i = f.indexOf('~'); return i >= 0 ? f.slice(i + 1) : f; }
+  function roomFrom(text) { const f = afterHash(text), i = f.indexOf('~'); return i > 0 ? f.slice(0, i) : ''; }
 
   // Camera -> QR text. Draws into `video`; calls onCode(text) once with the first code that
   // looks like a pairing code (or a link carrying one), then stops. Returns stop().
@@ -67,5 +67,5 @@
     return stop;
   }
 
-  window.SSQR = { render, remoteUrl, codeFrom, scan };
+  window.SSQR = { render, remoteUrl, codeFrom, roomFrom, scan };
 })();

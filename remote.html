@@ -77,7 +77,7 @@ const $ = (id) => document.getElementById(id);
 const native = typeof window.SSNative !== 'undefined';   // inside the SpatialStage Rig app: its service reads the sensor, screen off or on
 const turn = new SSPhoneTurn();
 const guest = new SSPair.Guest();
-let live = 0, lastSent = null, sendTimer = null;
+let live = 0, lastSent = null, sendTimer = null, room = '';
 
 function status(text, kind) { const el = $('status'); el.textContent = text; el.className = kind || ''; }
 
@@ -129,11 +129,13 @@ $('pairBtn').addEventListener('click', async () => {
   try {
     if (!(await startMotion())) { $('pairBtn').disabled = false; return; }
     const reply = await guest.join($('offer').value);
+    let sent = false;
+    if (room) { try { await SSPair.relayPost(room, reply); sent = true; } catch (e) { /* fall back to the reply QR below */ } }
     $('reply').value = reply;
     try { SSQR.render($('replyQr'), reply); } catch (e) {}
     $('replyBox').hidden = false;
     if (navigator.share) $('shareBtn').hidden = false;
-    status('Now copy the reply to the PC and press Connect there.');
+    status(sent ? 'Reply sent to the PC automatically - connecting...' : 'Now show the reply QR to the PC (or copy the code to it).');
   } catch (e) { status(e.message || String(e), 'bad'); }
   $('pairBtn').disabled = false;
 });
@@ -145,7 +147,15 @@ $('shareBtn').addEventListener('click', () => { navigator.share({ text: $('reply
 
 // The PC's QR: scanned here (camera), or arrives as remote.html#<code> from the phone's own camera app.
 let stopScan = null;
-function takeOffer(text) { $('offer').value = SSQR.codeFrom(text); status('Code received. Tap "Make my reply code".', 'ok'); }
+function takeOffer(text) {
+  $('offer').value = SSQR.codeFrom(text);
+  room = SSQR.roomFrom(text);
+  status('Code received.', 'ok');
+  // Nothing to tap where the browser needs no permission: carry straight on. (iOS asks for motion
+  // access from a tap, so there the person taps once.)
+  if (!/iPhone|iPad|iPod/i.test(navigator.userAgent) && $('offer').value.length > 20) $('pairBtn').click();
+  else status('Code received. Tap "Make my reply code".', 'ok');
+}
 $('scanBtn').addEventListener('click', async () => {
   const video = $('scanVideo');
   if (stopScan) { stopScan(); stopScan = null; video.hidden = true; return; }
