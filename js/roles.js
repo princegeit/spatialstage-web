@@ -26,6 +26,11 @@
     hihat:  { label: 'tempo orbit',   fft: null,     preset: TEMPO, smoothing: 0.3 },
     ride:   { label: 'sways',         fft: null,     preset: SINE,  rate: 0.08, smoothing: 0.3 },
     crash:  { label: 'moves by section', fft: SECTIONS, preset: null, smoothing: 0.4 },
+    // live-input stems (sound card): they stay where they are put
+    input1: { label: 'anchored',      fft: null,     preset: null,  smoothing: 1 },
+    input2: { label: 'anchored',      fft: null,     preset: null,  smoothing: 1 },
+    input3: { label: 'anchored',      fft: null,     preset: null,  smoothing: 1 },
+    input4: { label: 'anchored',      fft: null,     preset: null,  smoothing: 1 },
   };
 
   // [[param, value], ...] to send for one stem. opts.hasCurves = false (a
