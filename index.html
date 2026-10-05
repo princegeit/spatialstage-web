@@ -298,6 +298,14 @@
   details.setup { margin-top: 10px; font-size: 0.72rem; color: #aaa; }
   details.setup[hidden] { display: none; }
   details.setup summary { cursor: pointer; color: #8a8a8a; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+  #ledStripsRow { flex-wrap: wrap; }
+  #ledStripsRow .seg-btn.off { opacity: 0.55; }
+  .strip-card { margin: 8px 0; padding: 10px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; background: rgba(255,255,255,0.03); }
+  .strip-card .strip-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .strip-card .strip-head input { flex: 1; min-width: 0; }
+  .strip-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+  .strip-grid label { font-size: 0.66rem; color: #999; }
+  .strip-card input[type=text], .strip-card input[type=number], .strip-card select { min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.78rem; -webkit-user-select: text; user-select: text; }
   .led-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; margin-top: 8px; }
   .led-grid input[type=text], .led-grid input[type=number] { min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.78rem; -webkit-user-select: text; user-select: text; }
   .led-grid input[type=range] { margin-top: 0; }
@@ -428,6 +436,8 @@
       <div class="weight-row"><label>Width</label><input type="range" id="ledSpread" min="1" max="90" step="1"><output id="ledSpreadOut"></output></div>
       <div class="field-label">Tail (seconds the trail behind a moving stem takes to fade &mdash; 0 = none)</div>
       <div class="weight-row"><label>Tail</label><input type="range" id="ledTail" min="0" max="3" step="0.1"><output id="ledTailOut"></output></div>
+      <div class="field-label">Strips this stem lights (tap to switch a strip on or off for this stem)</div>
+      <div class="seg-row" id="ledStripsRow"></div>
     </div>
 
     <div id="spatialPanel" hidden>
@@ -734,20 +744,11 @@
     </div>
     <div class="hint">Pd match reproduces the live rig's pan + inter-aural delay exactly. HRTF uses the browser's head-related response for a more out-of-head image.</div>
     <details class="setup" id="ledSetup">
-      <summary>LED strip (WLED, through the helper)</summary>
+      <summary>LED strips (WLED, through the helper)</summary>
       <div class="hint left">Lights a WLED strip around you in each stem's direction and colour, like the Pd rig's. Needs SpatialStage Helper 1.1 running on this PC (browsers cannot talk to WLED directly) and WLED's "Receive UDP realtime" on.</div>
-      <div class="led-grid">
-        <label for="ledHost">WLED address</label><input type="text" id="ledHost" placeholder="192.168.1.50" autocomplete="off">
-        <label for="ledCount">LEDs in the ring</label><input type="number" id="ledCount" min="1" max="490">
-        <label for="ledStart">First ring LED</label><input type="number" id="ledStart" min="0" max="489">
-        <label for="ledFront">LED straight ahead</label><input type="number" id="ledFront" min="0">
-        <label for="ledBrightness">Brightness</label><input type="range" id="ledBrightness" min="0" max="1" step="0.05">
-      </div>
-      <div class="field-label">Direction (LED numbers go this way round, seen from above)</div>
-      <div class="seg-row" id="ledDirRow">
-        <button class="seg-btn" data-value="1">Clockwise</button>
-        <button class="seg-btn" data-value="0">Anticlockwise</button>
-      </div>
+      <div class="hint left">One entry per WLED controller, each with its own ring size and calibration. Then pick, per stem (the LED button on its card), which strips it lights.</div>
+      <div id="ledStripEditor"></div>
+      <button id="ledStripAddBtn" class="action">+ Add a WLED strip</button>
       <div class="seg-row" id="ledRunRow">
         <button class="seg-btn" data-value="1">Strip on</button>
         <button class="seg-btn" data-value="0">Off</button>

@@ -2035,28 +2035,77 @@ const ledStatus = $('ledStatus'), ledSetup = $('ledSetup');
 let ledWanted = pref('ledOn', false);
 led.onError = (msg) => { ledStatus.textContent = 'Not reaching the strip: ' + msg; };
 
+let stripEditorKey = '';
 function refreshLed() {
   ledSetup.hidden = isPhone;
-  const cfg = led.cfg;
-  for (const [id, v] of [['ledHost', cfg.host], ['ledCount', cfg.count], ['ledStart', cfg.startIndex], ['ledFront', cfg.frontIndex], ['ledBrightness', cfg.brightness]]) {
-    const el = $(id);
-    if (document.activeElement !== el) el.value = v;
-  }
-  setSegActive($('ledDirRow'), cfg.clockwise ? 1 : 0);
+  renderStripEditor();
   const can = led.configured && helperReadyNow() && SSHelper.supports('led');
   if (ledWanted && can) led.start(); else led.stop();
   setSegActive($('ledRunRow'), led.running ? 1 : 0);
-  ledStatus.textContent = !led.configured ? 'Enter the WLED address and LED count.'
-    : !helperReadyNow() ? 'Start SpatialStage Helper to drive the strip.'
+  const live = led.strips.filter((x) => x.host);
+  ledStatus.textContent = !led.configured ? 'Add a strip and enter its WLED address and LED count.'
+    : !helperReadyNow() ? 'Start SpatialStage Helper to drive the strips.'
     : !SSHelper.supports('led') ? 'Your helper is too old for the LED strip - download it again and run the installer (1.1).'
-    : led.running ? 'Sending to ' + cfg.host + ' (' + cfg.count + ' LEDs).' : 'Off.';
+    : led.running ? 'Sending to ' + live.map((x) => x.name + ' (' + x.host + ', ' + x.count + ' LEDs)').join(', ') + '.' : 'Off.';
   refreshCards();
 }
-const ledNumber = (id, key) => $(id).addEventListener('change', () => { led.set({ [key]: Number($(id).value) || 0 }); refreshLed(); });
-$('ledHost').addEventListener('change', () => { led.set({ host: $('ledHost').value.trim() }); if (!SSHelper.info) checkHelper(); refreshLed(); });
-ledNumber('ledCount', 'count'); ledNumber('ledStart', 'startIndex'); ledNumber('ledFront', 'frontIndex');
-$('ledBrightness').addEventListener('input', () => led.set({ brightness: Number($('ledBrightness').value) }));
-bindSegRow($('ledDirRow'), (v) => { led.set({ clockwise: v === 1 }); refreshLed(); });
+
+// The strip list's editor: one card per strip. Rebuilt only when the list changes, and never
+// under a field that is being edited.
+function renderStripEditor() {
+  const box = $('ledStripEditor');
+  const key = JSON.stringify(led.strips);
+  if (key === stripEditorKey) return;
+  if (box.contains(document.activeElement) && document.activeElement !== document.body) return;
+  stripEditorKey = key;
+  box.textContent = '';
+  const commit = () => { led.setStrips(led.strips); stripEditorKey = JSON.stringify(led.strips); if (!SSHelper.info) checkHelper(); refreshLed(); refreshLedPanel(); };
+  led.strips.forEach((strip, idx) => {
+    const card = document.createElement('div');
+    card.className = 'strip-card';
+    const head = document.createElement('div');
+    head.className = 'strip-head';
+    const name = document.createElement('input');
+    name.type = 'text'; name.value = strip.name; name.maxLength = 40; name.setAttribute('aria-label', 'Strip name');
+    name.addEventListener('change', () => { strip.name = name.value.trim() || 'Strip ' + (idx + 1); commit(); });
+    const del = document.createElement('button');
+    del.className = 'close-btn'; del.textContent = '\u00d7'; del.title = 'Remove this strip';
+    del.addEventListener('click', () => { led.strips.splice(idx, 1); commit(); stripEditorKey = ''; renderStripEditor(); });
+    head.append(name, del);
+    card.appendChild(head);
+    const grid = document.createElement('div');
+    grid.className = 'strip-grid';
+    const field = (label, el) => { const l = document.createElement('label'); l.textContent = label; grid.append(l, el); };
+    const input = (key, type, ph) => {
+      const i = document.createElement('input');
+      i.type = type; i.value = strip[key]; if (ph) i.placeholder = ph;
+      i.addEventListener('change', () => { strip[key] = type === 'number' ? Number(i.value) || 0 : i.value.trim(); commit(); });
+      return i;
+    };
+    field('WLED address', input('host', 'text', '192.168.1.50'));
+    field('LEDs in the ring', input('count', 'number'));
+    field('First ring LED', input('startIndex', 'number'));
+    field('LED straight ahead', input('frontIndex', 'number'));
+    const dir = document.createElement('select');
+    for (const [v, t] of [[true, 'Clockwise (to the listener\u2019s right)'], [false, 'Anticlockwise']]) {
+      const o = document.createElement('option'); o.value = String(v); o.textContent = t; if (strip.clockwise === v) o.selected = true; dir.appendChild(o);
+    }
+    dir.addEventListener('change', () => { strip.clockwise = dir.value === 'true'; commit(); });
+    field('LED numbers go', dir);
+    const br = document.createElement('input');
+    br.type = 'range'; br.min = 0; br.max = 1; br.step = 0.05; br.value = strip.brightness;
+    br.addEventListener('input', () => { strip.brightness = Number(br.value); led.save(); });
+    field('Brightness', br);
+    card.appendChild(grid);
+    box.appendChild(card);
+  });
+}
+$('ledStripAddBtn').addEventListener('click', () => {
+  if (led.strips.length >= 8) { toast('Up to 8 strips'); return; }
+  led.strips.push({ id: 's' + Date.now().toString(36), name: 'Strip ' + (led.strips.length + 1) });
+  led.setStrips(led.strips);
+  stripEditorKey = ''; refreshLed(); refreshLedPanel();
+});
 bindSegRow($('ledRunRow'), (v) => {
   ledWanted = v === 1; setPref('ledOn', ledWanted);
   if (ledWanted && !helperReadyNow()) checkHelper().then(refreshLed);
@@ -2084,6 +2133,36 @@ function refreshLedPanel() {
   ledColorEl.value = look.color; $('ledColorHex').textContent = look.color;
   ledSpreadEl.value = look.spread; $('ledSpreadOut').textContent = Math.round(look.spread) + '°';
   ledTailEl.value = look.tail; $('ledTailOut').textContent = look.tail > 0 ? look.tail.toFixed(1) + 's' : 'off';
+  refreshStripChips();
+}
+
+// Which strips this stem lights: one toggle per strip. Rebuilt only when something changed.
+let stripChipsKey = '';
+function refreshStripChips() {
+  const row = $('ledStripsRow'), look = led.cfg.stems[activeLedStem];
+  const key = activeLedStem + '|' + JSON.stringify(led.strips.map((x) => [x.id, x.name, !!x.host])) + '|' + JSON.stringify(look.strips);
+  if (key === stripChipsKey) return;
+  stripChipsKey = key;
+  const on = new Set(Array.isArray(look.strips) ? look.strips : led.strips.map((x) => x.id));
+  row.textContent = '';
+  if (!led.strips.length) {
+    const hint = document.createElement('div');
+    hint.className = 'hint left'; hint.textContent = 'No strips yet - add one under "LED strips" in the Songs window.';
+    row.appendChild(hint);
+  }
+  for (const strip of led.strips) {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (on.has(strip.id) ? ' active' : ' off');
+    b.textContent = strip.name + (strip.host ? '' : ' (no address)');
+    b.addEventListener('click', () => {
+      const next = new Set(on);
+      if (next.has(strip.id)) next.delete(strip.id); else next.add(strip.id);
+      const all = led.strips.every((x) => next.has(x.id));
+      setLed({ strips: all ? null : led.strips.filter((x) => next.has(x.id)).map((x) => x.id) });
+      buzz(15);
+    });
+    row.appendChild(b);
+  }
 }
 const setLed = (patch) => { if (activeLedStem) { led.setStem(activeLedStem, patch); refreshLedPanel(); refreshCards(); } };
 bindSegRow($('ledOnRow'), (v) => setLed({ on: v === 1 }));
