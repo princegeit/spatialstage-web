@@ -448,6 +448,17 @@ const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), te
 const ts1El = $('ts1'), ts2El = $('ts2'), w1El = $('w1'), w2El = $('w2'), w3El = $('w3');
 const presetRateEl = $('presetRate'), smoothingSliderEl = $('smoothingSlider');
 const spatialBpmEl = $('spatialBpm'), spatialBaseEl = $('spatialBase');
+const beatBlock = $('beatBlock'), beatSrcRow = $('beatSrcRow'), beatEveryRow = $('beatEveryRow'), beatFollowRow = $('beatFollowRow');
+const beatSenseRow = $('beatSenseRow'), beatSenseBlock = $('beatSenseBlock'), beatStepsRow = $('beatStepsRow'), beatPatternRow = $('beatPatternRow');
+const beatNudgeEl = $('beatNudge'), beatNudgeOutEl = $('beatNudgeOut'), beatsHintEl = $('beatsHint');
+// One button per stem, then the whole mix (value = number of stems).
+[...ALL_STEMS, null].forEach((s, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'seg-btn';
+  btn.dataset.value = i;
+  btn.textContent = s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Whole mix';
+  beatSrcRow.appendChild(btn);
+});
 
 ALL_STEMS.forEach((s, i) => {
   const btn = document.createElement('button');
@@ -507,9 +518,46 @@ bindSegRow(fftModeRow, (v) => {
   const stem = activeSpatialStem;
   if (!stem) return;
   if (v < 0) setSourceOn(stem, 'fft', false);
-  else { sendSpatial(stem, 'fftMode', v); if (fftWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'fft', true); }
+  else {
+    sendSpatial(stem, 'fftMode', v);
+    if (fftWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'fft', true);
+    if (v === 6) {
+      // Beat steps are positions: blended with the phone or a preset they would land halfway
+      // between speakers, so give the FFT source all of it (the blend rows can still be changed).
+      sendSpatial(stem, 'blendMode', 0);
+      sendSpatial(stem, 'blendWeights2', [1, 0]);
+      engine.beatsOf();   // start analysing the song now rather than at the first tick
+    }
+  }
   refreshSpatialPanel();
 });
+for (const [row, param] of [[beatSrcRow, 'beatSrc'], [beatEveryRow, 'beatEvery'], [beatStepsRow, 'beatSteps'], [beatPatternRow, 'beatPattern'], [beatFollowRow, 'beatFollow'], [beatSenseRow, 'beatSense']]) {
+  bindSegRow(row, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, v); refreshSpatialPanel(); } });
+}
+beatNudgeEl.addEventListener('input', () => {
+  if (!activeSpatialStem) return;
+  const v = Number(beatNudgeEl.value);
+  sendSpatial(activeSpatialStem, 'beatNudge', v);
+  beatNudgeOutEl.textContent = v + ' ms';
+});
+
+// What the Beat steps block says about the song's analysis and the chosen source.
+function beatsHintText(st) {
+  const entry = engine.song ? engine.beatsOf() : null;
+  if (!entry) return 'Load a song to find its beats.';
+  if (entry.status === 'analysing') return 'Analysing this song for beats (' + entry.progress + '%)...';
+  if (entry.status === 'error') return 'Could not analyse this song: ' + (entry.message || 'unknown error');
+  const name = st.beatSrc >= ALL_STEMS.length ? 'song' : ALL_STEMS[st.beatSrc];
+  const src = name === 'song' ? entry.data.song : entry.data.stems[name];
+  const what = name === 'song' ? 'the mix' : 'the ' + name + ' stem';
+  if (st.beatFollow === 1) {
+    const n = src ? SSMotion.peakTimes(src, st.beatSense).length : 0;
+    return n ? n + ' peaks in ' + what + ' at this sensitivity' : 'No peaks found in ' + what + ' — this stem will sit still. Try a higher sensitivity or the whole mix.';
+  }
+  if (!src || !src.beats.length) return 'No steady beat found in ' + what + ' — this stem will sit still. Try Every peak, or the whole mix.';
+  return src.bpm.toFixed(1) + ' BPM · ' + src.beats.length + ' beats · ' + Math.round(src.confidence * 100) + '% sure' +
+    (src.forced ? ' · following the song tempo' : '');
+}
 bindSegRow(fftSrcRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'fftSrc', v); refreshSpatialPanel(); } });
 bindSegRow(presetModeRow, (v) => {
   const stem = activeSpatialStem;
@@ -613,7 +661,21 @@ function refreshSpatialRows() {
       ' Now ' + motion.stems[activeSpatialStem].smoothingNow.toFixed(2) + '.';
   }
   $('roleLabel').textContent = (SSRoles.ROLES[activeSpatialStem] || {}).label || '';
-  fftSrcBlock.hidden = !fftOn;
+  const beatsOn = fftOn && st.fftMode === 6;
+  fftSrcBlock.hidden = !fftOn || beatsOn;   // Beat steps has its own source row
+  beatBlock.hidden = !beatsOn;
+  if (beatsOn) {
+    setSegActive(beatSrcRow, st.beatSrc);
+    setSegActive(beatEveryRow, st.beatEvery);
+    setSegActive(beatStepsRow, st.beatSteps);
+    setSegActive(beatPatternRow, st.beatPattern);
+    setSegActive(beatFollowRow, st.beatFollow);
+    setSegActive(beatSenseRow, st.beatSense);
+    beatSenseBlock.hidden = st.beatFollow !== 1;
+    if (document.activeElement !== beatNudgeEl) beatNudgeEl.value = st.beatNudge;
+    beatNudgeOutEl.textContent = st.beatNudge + ' ms';
+    beatsHintEl.textContent = beatsHintText(st);
+  }
   presetRateBlock.hidden = !presetOn;
   tempoBlock.hidden = !(presetOn && st.presetMode === 2);
   blendTwoRow.hidden = st.blendMode !== 0;
@@ -1813,7 +1875,11 @@ function refreshTransportButtons() {
   if (mark) paintMark(mark, current);
   refreshStatus();
 }
-engine.onStateChange = refreshTransportButtons;
+engine.onStateChange = () => {
+  refreshTransportButtons();
+  // the beat analysis reports progress through here
+  if (activeSpatialStem && spatial[activeSpatialStem].fftMode === 6 && !beatBlock.hidden) beatsHintEl.textContent = beatsHintText(spatial[activeSpatialStem]);
+};
 engine.onEnded = () => { if (songs.length) loadSongIndex((songIndex + 1) % songs.length, true); };
 
 // Keep playing across a skip if we were playing, or were about to be.

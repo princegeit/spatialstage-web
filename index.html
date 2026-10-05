@@ -477,12 +477,59 @@
         <button class="seg-btn" data-value="3">Precalc</button>
         <button class="seg-btn" data-value="4">Follow</button>
         <button class="seg-btn" data-value="5">Sections</button>
+        <button class="seg-btn" data-value="6">Beat steps</button>
       </div>
-      <div class="hint left">Follow = the stem's own stereo position. Sections = a new spot at each change in the song (wide when loud).</div>
+      <div class="hint left">Follow = the stem's own stereo position. Sections = a new spot at each change in the song (wide when loud). Beat steps = hops to the next position on each beat.</div>
 
       <div id="fftSrcBlock">
         <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
         <div class="seg-row" id="fftSrcRow"><!-- one button per stem, built from the stem list --></div>
+      </div>
+
+      <!-- Beat steps: the stem jumps to the next position on each beat. The
+           beats come from analysing the song (js/beats.js, in this page), so any stem's
+           beats - or the whole mix's - can drive any other stem. -->
+      <div id="beatBlock" hidden>
+        <div class="field-label">Beat from (a stem's own beat, or the whole mix)</div>
+        <div class="seg-row" id="beatSrcRow"><!-- one button per stem plus the mix --></div>
+        <div class="field-label">Follow &mdash; a steady beat (tempo found, held through gaps), or every peak (each hit as it happens, however irregular)</div>
+        <div class="seg-row" id="beatFollowRow">
+          <button class="seg-btn" data-value="0">Steady beat</button>
+          <button class="seg-btn" data-value="1">Every peak</button>
+        </div>
+        <div id="beatSenseBlock" hidden>
+          <div class="field-label">Peak sensitivity</div>
+          <div class="seg-row" id="beatSenseRow">
+            <button class="seg-btn" data-value="0">Hits only</button>
+            <button class="seg-btn" data-value="1">Normal</button>
+            <button class="seg-btn" data-value="2">Everything</button>
+          </div>
+        </div>
+        <div class="field-label">Step every (beats or peaks)</div>
+        <div class="seg-row" id="beatEveryRow">
+          <button class="seg-btn" data-value="1">1</button>
+          <button class="seg-btn" data-value="2">2</button>
+          <button class="seg-btn" data-value="4">4</button>
+          <button class="seg-btn" data-value="8">8</button>
+        </div>
+        <div class="field-label">Positions around the circle (4 = the four speakers)</div>
+        <div class="seg-row" id="beatStepsRow">
+          <button class="seg-btn" data-value="2">2</button>
+          <button class="seg-btn" data-value="3">3</button>
+          <button class="seg-btn" data-value="4">4</button>
+          <button class="seg-btn" data-value="6">6</button>
+          <button class="seg-btn" data-value="8">8</button>
+        </div>
+        <div class="field-label">Order</div>
+        <div class="seg-row" id="beatPatternRow">
+          <button class="seg-btn" data-value="0">&rarr; Clockwise</button>
+          <button class="seg-btn" data-value="1">&larr; Anticlockwise</button>
+          <button class="seg-btn" data-value="2">&harr; Back and forth</button>
+          <button class="seg-btn" data-value="3">Shuffle</button>
+        </div>
+        <div class="field-label">Nudge (ms &mdash; later if the jump feels early, earlier if late)</div>
+        <div class="weight-row"><label>Nudge</label><input type="range" id="beatNudge" min="-200" max="200" step="5"><output id="beatNudgeOut"></output></div>
+        <div class="hint" id="beatsHint" style="text-align:left"></div>
       </div>
 
       <div class="field-label">Auto role &mdash; <span id="roleLabel"></span></div>
@@ -760,6 +807,7 @@
 <script src="js/stems.js"></script>
 <script src="js/wav.js"></script>
 <script src="js/curves.js"></script>
+<script src="js/beats.js"></script>
 <script src="js/roles.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/motion.js"></script>

@@ -5,7 +5,8 @@
 // A setup is the whole stem configuration:
 //   { name, spatial: { <stem>: { fftMode, presetMode, presetRate, blendMode,
 //       blendWeights2, blendWeights3, tempoSource, tempoBpm, base, fftSrc,
-//       smoothing, smoothingMode } },
+//       smoothing, smoothingMode, beatSrc, beatEvery, beatSteps, beatPattern,
+//       beatNudge, beatFollow, beatSense } },
 //     stems: { <stem>: { volume, muted, armed } } }
 // `base` is where the stem sits, as an offset from its layout azimuth
 // (SSStems.GEOMETRY / the Pd patch's creation arguments).
@@ -33,6 +34,7 @@
       blendWeights2: [0, 0], blendWeights3: [0.333, 0.333, 0.334],
       tempoSource: 0, tempoBpm: 120, base: 0, fftSrc: S.STEMS.indexOf(stem), smoothing: 1,
       smoothingMode: 0,
+      beatSrc: S.STEMS.length, beatEvery: 1, beatSteps: 4, beatPattern: 0, beatNudge: 0, beatFollow: 0, beatSense: 1,
     };
   }
 
@@ -62,6 +64,15 @@
       d.smoothing = Math.max(0.01, Math.min(1, d.smoothing));
       d.tempoBpm = Math.max(20, Math.min(300, d.tempoBpm));
       if ([0, 1, 2].includes(Math.round(num(sp.smoothingMode, 0)))) d.smoothingMode = Math.round(num(sp.smoothingMode, 0));
+      // Beat steps settings, kept only when valid (the same checks as the bridge's BEAT_PARAMS).
+      const pick = (k, ok) => { const v = Math.round(num(sp[k], d[k])); if (ok(v)) d[k] = v; };
+      pick('beatSrc', (v) => v >= 0 && v <= S.STEMS.length);
+      pick('beatEvery', (v) => [1, 2, 4, 8].includes(v));
+      pick('beatSteps', (v) => [2, 3, 4, 6, 8].includes(v));
+      pick('beatPattern', (v) => [0, 1, 2, 3].includes(v));
+      pick('beatFollow', (v) => v === 0 || v === 1);
+      pick('beatSense', (v) => [0, 1, 2].includes(v));
+      d.beatNudge = Math.max(-200, Math.min(200, num(sp.beatNudge, d.beatNudge)));
       if (Array.isArray(sp.blendWeights2) && sp.blendWeights2.length === 2) d.blendWeights2 = sp.blendWeights2.map((v) => num(v, 0));
       if (Array.isArray(sp.blendWeights3) && sp.blendWeights3.length === 3) {
         const raw = sp.blendWeights3.map((v) => num(v, 0));

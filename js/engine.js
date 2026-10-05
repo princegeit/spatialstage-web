@@ -321,7 +321,7 @@
       // Envelopes are filled in by envelopeOf() the first time precalc mode
       // asks for one - most songs never use it, and computing them all up
       // front cost a noticeable pause on every load.
-      this.song = { name: song.name, buffers, duration, envelopes: {}, curves: {} };
+      this.song = { name: song.name, buffers, duration, envelopes: {}, curves: {}, beats: null };
       this.offset = 0;
       this._changed();
       return this.song;
@@ -349,6 +349,7 @@
       song.buffers[stem] = buf;
       delete song.envelopes[stem];
       for (const k of Object.keys(song.curves)) if (k.endsWith(':' + stem)) delete song.curves[k];
+      song.beats = null;   // re-analysed the next time Beat steps asks
       song.duration = Math.max(song.duration, buf.duration);
       if (this.playing && this.sources) {
         const old = this.sources[stem];
@@ -392,6 +393,53 @@
         song.curves[key] = kind === 'balance' ? SSCurves.balance(L, R) : SSCurves.sections(L, R, buf.sampleRate).curve;
       }
       return song.curves[key];
+    }
+
+    // Beat steps (beats.js): { status: 'analysing' | 'ready' | 'error', progress, data }, started
+    // the first time a stem in that mode asks and kept for the song. Done in the page, stem by
+    // stem with a pause between slices so playback and the UI stay smooth; a song takes a few
+    // seconds. data is the shape the rig's .beats.json has: { stems, song }.
+    beatsOf() {
+      const song = this.song;
+      if (!song) return null;
+      if (!song.beats) {
+        song.beats = { status: 'analysing', progress: 0, data: null, message: '' };
+        this._analyseBeats(song, song.beats);
+      }
+      return song.beats;
+    }
+
+    async _analyseBeats(song, entry) {
+      const pause = () => new Promise((r) => setTimeout(r, 0));
+      try {
+        const names = this.stems.filter((s) => song.buffers[s]);
+        if (!names.length) throw new Error('no stems loaded');
+        const CH = 1 << 17, mono = new Float32Array(CH), onsets = [];
+        for (let si = 0; si < names.length; si++) {
+          const buf = song.buffers[names[si]];
+          const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+          const o = new SSBeats.OnsetEnvelope(buf.sampleRate);
+          for (let off = 0; off < L.length; off += CH) {
+            const m = Math.min(CH, L.length - off);
+            for (let i = 0; i < m; i++) mono[i] = (L[off + i] + R[off + i]) * 0.5;
+            o.push(mono.subarray(0, m));
+            if (((off / CH) & 3) === 3) {
+              entry.progress = Math.round(100 * (si + off / L.length) / names.length);
+              this._changed();
+              await pause();
+              if (this.song !== song || song.beats !== entry) return;   // another song, or a stem was swapped
+            }
+          }
+          onsets.push(o);
+          await pause();
+        }
+        entry.data = SSBeats.describeSong(onsets, names);
+        entry.status = 'ready';
+      } catch (e) {
+        entry.status = 'error'; entry.message = e.message || String(e);
+      }
+      entry.progress = 100;
+      this._changed();
     }
 
     /* ---------------- transport ---------------- */
