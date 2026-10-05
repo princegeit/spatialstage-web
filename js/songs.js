@@ -233,7 +233,7 @@
     if (d.channels.length >= 12) {
       showStems(d.channels.length).forEach((s, i) => {
         const pair = [d.channels[2 * i], d.channels[2 * i + 1]];
-        if (i < BASE_STEMS.length || !silent(pair)) stems[s] = pair;
+        if (!silent(pair)) stems[s] = pair;   // a stem with no sound is not in the song
       });
     } else if (d.channels.length === 6) {
       BASE_STEMS.forEach((s, i) => { stems[s] = [d.channels[i], d.channels[i]]; });
@@ -243,5 +243,11 @@
     return { name: desc.name, sampleRate: d.sampleRate, stems };
   }
 
-  window.SSSongs = { scanFiles, decodeSong, STEMS, slotFiles };
+  // One dropped file for one stem slot: { sampleRate, pair: [L, R] }.
+  async function decodeStemFile(file, engine) {
+    const d = await decodeFile(file, engine, () => {});
+    return { sampleRate: d.sampleRate, pair: pairFrom(d.channels) };
+  }
+
+  window.SSSongs = { scanFiles, decodeSong, decodeStemFile, STEMS, slotFiles };
 })();

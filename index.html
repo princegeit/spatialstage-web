@@ -75,7 +75,10 @@
   .mute-btn.muted { background: rgba(255,60,60,0.22); border-color: #f55; color: #f88; }
   .card-row2 { display: flex; gap: 5px; margin-top: 6px; }
   .spatial-btn, .center-btn { flex: 1; }
-  .spatial-btn.open { background: rgba(255,255,255,0.16); color: #ddd; }
+  /* A stem card opens its spatial menu; the open one is outlined. */
+  .stem-card { cursor: pointer; }
+  .stem-card.sel { border-color: currentColor; }
+  .spatial-btn.on { background: rgba(199,125,255,0.18); border-color: #c77dff; color: #c77dff; }
   .stem-card.muted { opacity: 0.55; }
 
   /* --- spatial (pd/spatial) advanced panel: one shared panel for whichever
@@ -174,8 +177,11 @@
   .quick-row button { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.13); color: #999;
                       border-radius: 8px; padding: 8px; font-size: 0.66rem; font-weight: 700; text-transform: uppercase; cursor: pointer; }
   button.action { font-size: 0.9rem; font-weight: 700; padding: 12px; border-radius: 10px; border: none; width: 100%; margin-top: 8px; cursor: pointer; }
-  #sensorBtn { background: #eee; color: #111; }
-  #sensorBtn.active { background: #0f8; }
+  #dimOverlay { position: fixed; inset: 0; z-index: 1000; background: #000; display: flex; align-items: flex-end; justify-content: center;
+                padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px)); color: #262626; font-size: 0.8rem; touch-action: manipulation; }
+  #dimOverlay[hidden] { display: none; }
+  #sensorBtn, #handBtn { color: #888; font-size: 0.72rem; text-align: center; margin: 8px 0 2px; }
+  #sensorBtn.active { color: #0f8; }
   #calibrateBtn { background: #333; color: #eee; }
   input[type=range] { width: 100%; margin-top: 14px; accent-color: #0f8; }
   .hint { color: #8a8a8a; font-size: 0.66rem; text-align: center; margin-top: 6px; line-height: 1.4; }
@@ -257,8 +263,11 @@
   .level-fill { height: 100%; width: 0%; background: currentColor; opacity: 0.85; transition: width 60ms linear; }
   /* --- drum-kit parts: shown only for a song that has them --- */
   .stem-note { margin-left: auto; font-size: 0.56rem; font-weight: 800; letter-spacing: 0.04em; color: #8a8a8a; text-transform: uppercase; }
-  #stemGrid.no-parts .stem-card.part { display: none; }
-  .stem-card.absent { opacity: 0.4; }
+  /* A stem the song does not have collapses to its heading; it still takes a dropped audio file. */
+  .stem-card.absent { opacity: 0.6; align-self: start; padding-bottom: 8px; }
+  .stem-card.absent > :not(.card-head) { display: none; }
+  .stem-card.absent .card-head { margin-bottom: 0; }
+  .stem-card.drop-over { outline: 2px dashed #0f8; outline-offset: -2px; }
   /* --- LED button + panel (Pd rig's LED panel) --- */
   .led-btn { display: flex; align-items: center; justify-content: center; gap: 5px; }
   .led-btn .swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #333; }
@@ -296,8 +305,7 @@
   #sensorOptions[hidden] { display: none; }
   #sensorDbg { min-height: 1em; }
   /* --- hand tracking --- */
-  #handBtn { background: #333; color: #eee; }
-  #handBtn.active { background: #ffcc33; color: #111; }
+  #handBtn.active { color: #ffcc33; }
   #handPanel { margin-top: 10px; }
   #handPanel[hidden] { display: none; }
   .cam { position: relative; width: 100%; max-width: 420px; margin: 0 auto; aspect-ratio: 4 / 3; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); }
@@ -336,9 +344,69 @@
   .stem-slots { display: flex; gap: 3px; flex: none; }
   .stem-slots i { width: 6px; height: 6px; border-radius: 50%; display: block; opacity: 0.25; }
   .stem-slots i.on { opacity: 1; }
+
+  /* --- per-stem phone / camera switches --- */
+  .phone-btn.on { background: rgba(77,184,255,0.18); border-color: #4db8ff; color: #4db8ff; }
+  .cam-btn.on { background: rgba(255,204,51,0.18); border-color: #ffcc33; color: #ffcc33; }
+
+  /* --- app shell: a fixed-height tool, not a scrolling page. Each window
+     (panel) scrolls inside itself; a rail of icons on the right edge shows or
+     hides them. Same in the web app and the rig page - see PARITY.md. --- */
+  html, body { height: 100%; }
+  body { overflow-x: hidden; overflow-y: auto; padding: 10px 10px 10px 62px; }
+  #app { display: flex; gap: 12px; min-height: calc(100vh - 20px); min-height: calc(100dvh - 20px); align-items: flex-start; max-width: none; margin: 0;
+         overflow-x: auto; overflow-y: visible; }
+  #app > .panel { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-width: 270px; min-height: 0;
+                  overflow: visible; order: 0; }
+  #app > .panel[hidden] { display: none; }
+  #app > #stemCol { flex-grow: 1.35; }
+  #app > #centerCol { flex-grow: 1.1; }
+  #app > #sideCol { flex: 0 0 340px; background: #181818; }
+  #app > .panel > * { flex: none; }
+  .panel-title { padding-right: 30px; }
+  .pn-hide { position: absolute; top: 8px; right: 8px; z-index: 2; width: 24px; height: 24px; padding: 0; border-radius: 6px; cursor: pointer;
+             background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #aaa; font-size: 0.9rem; line-height: 1; }
+  .pn-hide:hover { color: #eee; background: rgba(255,255,255,0.14); }
+  /* The playlist takes whatever height is left in its window and scrolls. */
+  #songCol > #songList { flex: none; max-height: 60vh; overflow-y: auto; overscroll-behavior: contain; }
+
+  /* --- per-stem phone / camera switches --- */
+  .phone-btn.on { background: rgba(77,184,255,0.18); border-color: #4db8ff; color: #4db8ff; }
+  .cam-btn.on { background: rgba(255,204,51,0.18); border-color: #ffcc33; color: #ffcc33; }
+  .close-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #aaa; border-radius: 7px;
+               width: 30px; height: 28px; font-size: 1.05rem; line-height: 1; cursor: pointer; flex: none; }
+  .close-btn:hover { color: #eee; background: rgba(255,255,255,0.12); }
+  #sideCol #spatialPanel, #sideCol #ledPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+
+  /* --- rail: one icon per window, down the right edge --- */
+  #rail { position: fixed; left: 0; top: 0; bottom: 0; width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+          padding: 10px 0; overflow-y: auto; scrollbar-width: none; background: #161616; border-right: 1px solid rgba(255,255,255,0.08); z-index: 18; }
+  .rail-btn { width: 44px; padding: 6px 0 4px; border-radius: 10px; border: 1px solid transparent; background: rgba(255,255,255,0.05); color: #b8b8b8; cursor: pointer;
+              display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 0.5rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+  .rail-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .rail-btn:hover { color: #ddd; background: rgba(255,255,255,0.06); }
+  .rail-btn.on { color: #0f8; background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.35); }
+
+  @media (max-width: 899px) {
+    /* A phone shows one window at a time; the rail picks which. */
+    #app > .panel { min-width: 0; }
+    .pn-hide { display: none; }
+    /* The Spatial / LED settings take the whole screen beside the rail and
+       scroll inside it, with the title (and its close button) pinned on top;
+       the other windows step aside while it is open. */
+    #app > #sideCol { position: fixed; left: 52px; right: 0; top: 0; bottom: 0; flex: none; z-index: 17; border-radius: 0;
+                      overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+                      padding: 0 12px calc(28px + env(safe-area-inset-bottom, 0px)); }
+    #app.has-side > .panel:not(#sideCol) { display: none; }
+    #sideCol .spatial-title { position: sticky; top: 0; z-index: 3; background: #181818; margin: 0 -12px 10px; padding: 12px 12px 8px;
+                              border-bottom: 1px solid rgba(255,255,255,0.1); }
+    #sideCol .seg-row { flex-wrap: wrap; }
+    #sideCol input[type="range"] { min-width: 0; }
+  }
 </style>
 </head>
 <body>
+<div id="dimOverlay" hidden>Control is still on &middot; tap to wake</div>
 <div id="startOverlay">
   <h1>SpatialStage</h1>
   <p>Spatial stem player. Headphones on. Add a song, then drag the dials or rotate your phone to move each stem around your head.</p>
@@ -347,31 +415,7 @@
 
 <div id="app">
 
-  <section class="panel" id="stemCol">
-    <div class="panel-title">Stems &mdash; drag dial to place &middot; ARM = follows rotate</div>
-    <div class="stem-grid" id="stemGrid"></div>
-    <div class="quick-row">
-      <button id="selectAllBtn">Arm All</button>
-      <button id="selectNoneBtn">Arm None</button>
-    </div>
-    <div class="quick-row">
-      <button id="muteNoneBtn">Unmute All</button>
-      <button id="muteAllBtn">Mute All</button>
-    </div>
-
-    <div id="outputPanel">
-      <div class="field-label">Output &mdash; headphones (stereo) or four speakers (a 4-channel sound card)</div>
-      <div class="seg-row" id="quadOutputRow">
-        <button class="seg-btn active" data-value="0">Headphones</button>
-        <button class="seg-btn" data-value="1">Quad speakers</button>
-      </div>
-      <div class="field-label">Left / right &mdash; sound and LED strip together (swap if the room feels back-to-front)</div>
-      <div class="seg-row" id="lrSwapRow">
-        <button class="seg-btn active" data-value="0">Normal</button>
-        <button class="seg-btn" data-value="1">Swap L &harr; R</button>
-      </div>
-    </div>
-
+  <aside class="panel" id="sideCol" hidden>
     <div id="ledPanel" hidden>
       <div class="spatial-title"><span>LED &mdash; <span id="ledStemName"></span></span><button id="ledCloseBtn" class="close-btn" title="Close" aria-label="Close LED panel">&times;</button></div>
       <div class="seg-row" id="ledOnRow">
@@ -388,6 +432,14 @@
 
     <div id="spatialPanel" hidden>
       <div class="spatial-title"><span>SPATIAL &mdash; <span id="spatialStemName"></span></span><button id="spatialCloseBtn" class="close-btn" title="Close" aria-label="Close spatial panel">&times;</button></div>
+
+      <div class="field-label">Controlled by &mdash; one at a time. Phone and Camera switch the motion sources below off; Spatial switches them on</div>
+      <div class="seg-row" id="ctlRow">
+        <button class="seg-btn off" data-value="0">None</button>
+        <button class="seg-btn" data-value="1">Phone</button>
+        <button class="seg-btn" data-value="2">Camera</button>
+        <button class="seg-btn" data-value="3">Spatial</button>
+      </div>
 
       <div class="field-label">Smoothing (final output, any source &mdash; left = smooth/gliding, right = instant/jittery)</div>
       <div class="seg-row" id="smoothingModeRow">
@@ -423,11 +475,20 @@
         <button class="seg-btn" data-value="1">Onset</button>
         <button class="seg-btn" data-value="2">Band</button>
         <button class="seg-btn" data-value="3">Precalc</button>
+        <button class="seg-btn" data-value="4">Follow</button>
+        <button class="seg-btn" data-value="5">Sections</button>
       </div>
+      <div class="hint left">Follow = the stem's own stereo position. Sections = a new spot at each change in the song (wide when loud).</div>
 
       <div id="fftSrcBlock">
         <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
         <div class="seg-row" id="fftSrcRow"><!-- one button per stem, built from the stem list --></div>
+      </div>
+
+      <div class="field-label">Auto role &mdash; <span id="roleLabel"></span></div>
+      <div class="seg-row" id="roleRow">
+        <button class="seg-btn" data-value="one">Set this stem</button>
+        <button class="seg-btn" data-value="all">Set all stems</button>
       </div>
 
       <div class="field-label">Preset motion</div>
@@ -455,6 +516,32 @@
       <div class="field-label">Position (reference point &mdash; also set by dragging the dial)</div>
       <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
     </div>
+  </aside>
+
+  <section class="panel" id="stemCol">
+    <div class="panel-title">Stems &mdash; drag dial to place &middot; ARM = follows rotate</div>
+    <div class="stem-grid" id="stemGrid"></div>
+    <div class="quick-row">
+      <button id="selectAllBtn">Arm All</button>
+      <button id="selectNoneBtn">Arm None</button>
+    </div>
+    <div class="quick-row">
+      <button id="muteNoneBtn">Unmute All</button>
+      <button id="muteAllBtn">Mute All</button>
+    </div>
+
+    <div id="outputPanel">
+      <div class="field-label">Output &mdash; headphones (stereo) or four speakers (a 4-channel sound card)</div>
+      <div class="seg-row" id="quadOutputRow">
+        <button class="seg-btn active" data-value="0">Headphones</button>
+        <button class="seg-btn" data-value="1">Quad speakers</button>
+      </div>
+      <div class="field-label">Left / right &mdash; sound and LED strip together (swap if the room feels back-to-front)</div>
+      <div class="seg-row" id="lrSwapRow">
+        <button class="seg-btn active" data-value="0">Normal</button>
+        <button class="seg-btn" data-value="1">Swap L &harr; R</button>
+      </div>
+    </div>
   </section>
 
   <section class="panel" id="centerCol">
@@ -479,8 +566,9 @@
     </svg>
     <input type="range" id="slider" min="-180" max="180" value="0" step="1" aria-label="Rotate armed stems">
     <div class="hint">Rotates armed stems together. Drag a dot on the radar, or a dial, to place one stem.</div>
-    <button id="sensorBtn" class="action">Enable Motion</button>
-    <button id="calibrateBtn" class="action">Zero / Recenter</button>
+    <div id="sensorBtn">Phone motion: off (set a stem to Phone)</div>
+    <button id="calibrateBtn" class="action" title="Put every stem at the centre and start all movement from there">Zero / Centre all</button>
+    <button id="dimBtn" class="action" title="Black screen that keeps this page (and phone control) running - tap it to wake">Dim screen (keeps control on)</button>
     <div id="sensorOptions" hidden>
       <div class="field-label">Phone turn direction (swap if turning right sends the sound left)</div>
       <div class="seg-row" id="phoneInvertRow">
@@ -500,7 +588,7 @@
       <div class="hint" id="turnCalOut"></div>
       <div class="hint" id="sensorDbg"></div>
     </div>
-    <button id="handBtn" class="action">Hand Tracking (camera)</button>
+    <div id="handBtn">Camera tracking: off (set a stem to Camera)</div>
     <div id="handPanel" hidden>
       <div class="cam mirror" id="camBox">
         <video id="handVideo" playsinline muted></video>
@@ -671,6 +759,8 @@
 
 <script src="js/stems.js"></script>
 <script src="js/wav.js"></script>
+<script src="js/curves.js"></script>
+<script src="js/roles.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/motion.js"></script>
 <script src="js/helper.js"></script>

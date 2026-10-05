@@ -36,6 +36,14 @@ const base = {}, widthDeg = {}, azim = {}, volume = {}, phone = {};
 for (const s of ALL_STEMS) { base[s] = GEOMETRY[s].azimuth; widthDeg[s] = GEOMETRY[s].width; azim[s] = base[s]; volume[s] = 1; phone[s] = 0; }
 let mutedStems = new Set();
 let selectedStems = new Set(ALL_STEMS);
+// Who moves a stem: its phone, the camera, its spatial motion, or nobody -
+// one at a time. Phone and camera leave the spatial motion sources off (the
+// phone-only blend); spatial turns them on (the stem's last spatial setup, or
+// its Auto role the first time). The spatial menu shows the same choice.
+const ctlName = [null, 'phone', 'cam', 'spatial'];
+const ctl = {};
+for (const s of ALL_STEMS) ctl[s] = 'phone';
+const savedBlend = {};
 let songs = [], songIndex = -1;
 let loadedSong = null;   // the songs[] entry whose audio is in the engine
 let loading = null;      // { song, pct, autoplay } while one is decoding
@@ -119,8 +127,12 @@ function buildCards() {
         '<button class="tog-btn mute-btn">MUTE</button>' +
       '</div>' +
       '<div class="card-row2">' +
+        '<button class="tog-btn phone-btn" title="Phone motion turns this stem (when armed)">PHONE</button>' +
+        '<button class="tog-btn cam-btn" title="Camera hand tracking moves this stem (when armed)">CAM</button>' +
+      '</div>' +
+      '<div class="card-row2">' +
         '<button class="tog-btn center-btn">CENTER</button>' +
-        '<button class="tog-btn spatial-btn">SPATIAL</button>' +
+        '<button class="tog-btn spatial-btn" title="Spatial motion on/off (FFT / preset motion, set in the spatial menu)">SPATIAL</button>' +
       '</div>' +
       '<div class="card-row2">' +
         '<button class="tog-btn led-btn" hidden><span class="swatch"></span>LED</button>' +
@@ -137,6 +149,8 @@ function buildCards() {
       cap: card.querySelector('.fader-cap'),
       arm: card.querySelector('.arm-btn'),
       mute: card.querySelector('.mute-btn'),
+      phone: card.querySelector('.phone-btn'),
+      cam: card.querySelector('.cam-btn'),
       spatial: card.querySelector('.spatial-btn'),
       led: card.querySelector('.led-btn'),
       level: card.querySelector('.level-fill'),
@@ -144,8 +158,29 @@ function buildCards() {
     };
     cards[stem].mute.addEventListener('click', () => setMuted(stem, !mutedStems.has(stem)));
     cards[stem].arm.addEventListener('click', () => setArmed(stem, !selectedStems.has(stem)));
+    cards[stem].phone.addEventListener('click', () => toggleControl('phone', stem));
+    cards[stem].cam.addEventListener('click', () => toggleControl('cam', stem));
     card.querySelector('.center-btn').addEventListener('click', () => centerStem(stem));
-    cards[stem].spatial.addEventListener('click', () => openSpatialPanel(stem));
+    cards[stem].spatial.addEventListener('click', () => toggleControl('spatial', stem));
+    // An audio file dropped on a card becomes that stem (adds it, or replaces what it had).
+    card.addEventListener('dragover', (ev) => {
+      if (!draggingFiles(ev)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      ev.dataTransfer.dropEffect = 'copy';
+      card.classList.add('drop-over');
+    });
+    card.addEventListener('dragleave', (ev) => { if (!card.contains(ev.relatedTarget)) card.classList.remove('drop-over'); });
+    card.addEventListener('drop', (ev) => {
+      card.classList.remove('drop-over');
+      if (!draggingFiles(ev)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      dragDepth = 0; dropZone.classList.remove('over');
+      dropOnStem(stem, [...ev.dataTransfer.files].find((f) => /\.(wav|wave|flac|mp3|m4a|aac|mp4|ogg|oga|opus|webm|aif|aiff|caf)$/i.test(f.name) || (f.type || '').startsWith('audio/')));
+    });
+    card.addEventListener('click', (ev) => {   // anywhere on the card but its controls
+      if (ev.target.closest('button, .knob, .fader')) return;
+      if (activeSpatialStem !== stem) openSpatialPanel(stem);
+    });
     cards[stem].led.addEventListener('click', () => openLedPanel(stem));
     bindKnob(card.querySelector('.knob'), stem);
     bindFader(card.querySelector('.fader'), stem);
@@ -156,7 +191,10 @@ function buildCards() {
 // are only shown when it does - twelve cards for a song with six stems is
 // a screen of dead controls on a phone.
 const songHasParts = () => DRUM_PARTS.some((p) => engine.hasStem(p));
-const stemShown = (stem) => !IS_PART.has(stem) || songHasParts();
+// A stem the loaded song has no audio for (with no song loaded: the drum parts) is
+// collapsed to its heading and left off the radar and the hands.
+const stemAbsent = (stem) => engine.song ? stemNote(stem) === 'silent' : IS_PART.has(stem);
+const stemShown = (stem) => !stemAbsent(stem);
 
 // Why a stem has no sound right now, or '' if it has.
 function stemNote(stem) {
@@ -201,6 +239,13 @@ function refreshCards() {
     k.sel.setAttribute('opacity', armed ? 1 : 0.12);
     k.arm.classList.toggle('armed', armed);
     k.arm.setAttribute('aria-pressed', armed);
+    syncControl(stem);
+    for (const via of ['phone', 'cam', 'spatial']) {
+      const on = ctl[stem] === via;
+      k[via].classList.toggle('on', on);
+      k[via].setAttribute('aria-pressed', on);
+    }
+    k.card.classList.toggle('sel', stem === activeSpatialStem);
     const v = volume[stem] === undefined ? 1 : volume[stem];
     k.fill.style.height = (v * 100) + '%';
     k.cap.style.bottom = 'calc(' + (v * 100) + '% - 1.5px)';
@@ -209,11 +254,11 @@ function refreshCards() {
     k.mute.classList.toggle('muted', m);
     k.mute.setAttribute('aria-pressed', m);
     k.card.classList.toggle('muted', m);
-    const note = stemNote(stem);
+    const gone = stemAbsent(stem);
+    const note = gone ? 'empty' : stemNote(stem);
     k.note.textContent = note;
-    k.note.title = note === 'rest' ? 'Whatever the drum parts did not catch' : note === 'silent' ? 'This song has no audio for this stem' : '';
-    k.card.classList.toggle('absent', note === 'silent');
-    k.spatial.classList.toggle('open', stem === activeSpatialStem);
+    k.note.title = note === 'rest' ? 'Whatever the drum parts did not catch' : gone ? 'Not in this song - drop an audio file on this card to add it' : '';
+    k.card.classList.toggle('absent', gone);
     const look = led.cfg.stems[stem];
     k.led.hidden = !ledOn;
     k.led.classList.toggle('open', stem === activeLedStem);
@@ -237,9 +282,12 @@ function placeStem(stem, deg) {
 
 // Rotation (slider, phone, group drags): adds to each armed stem's phone
 // offset. Not a setup change - the rig does not count it as one either.
-function rotateArmedBy(d) {
+// `via` ('phone' or 'cam') limits it to stems with that input switched on;
+// the slider and the radar ring (no `via`) turn every armed stem.
+function rotateArmedBy(d, via) {
   if (!d) return;
   for (const stem of selectedStems) {
+    if (via && ctl[stem] !== via) continue;
     phone[stem] = wrap180(phone[stem] + d);
     motion.setPhone(stem, Math.round(phone[stem]));
   }
@@ -298,6 +346,49 @@ function setArmed(stem, on, quiet) {
   markModified();
   updateStemLabel(); refreshCards(); requestRadar();
   if (!quiet) buzz(15);
+}
+
+// A stem with a spatial source in its blend is under spatial control, whatever
+// set it (this page, a loaded setup, the Auto role, the sliders).
+function syncControl(stem) {
+  const st = spatial[stem];
+  if (!st) return;
+  if (fftWeight(st) > W_ON || presetWeight(st) > W_ON) ctl[stem] = 'spatial';
+  else if (ctl[stem] === 'spatial') ctl[stem] = 'phone';
+}
+
+function phoneOnlyBlend(stem) {
+  const st = spatial[stem];
+  st.blendWeights2 = [0, 0]; sendSpatial(stem, 'blendWeights2', [0, 0]);
+  st.blendWeights3 = [1, 0, 0]; sendSpatial(stem, 'blendWeights3', [1, 0, 0]);
+}
+
+function setControl(stem, to) {   // 'phone' | 'cam' | 'spatial' | null
+  const st = spatial[stem];
+  const wasSpatial = ctl[stem] === 'spatial';
+  if (to === 'spatial') {
+    if (!wasSpatial) {
+      const b = savedBlend[stem];
+      if (b) {
+        st.blendMode = b.mode; sendSpatial(stem, 'blendMode', b.mode);
+        st.blendWeights2 = b.w2.slice(); sendSpatial(stem, 'blendWeights2', b.w2.slice());
+        st.blendWeights3 = b.w3.slice(); sendSpatial(stem, 'blendWeights3', b.w3.slice());
+      } else {
+        applyRole(stem);
+      }
+      if (fftWeight(st) <= W_ON && presetWeight(st) <= W_ON) setSourceOn(stem, 'preset', true);
+    }
+  } else if (wasSpatial) {
+    savedBlend[stem] = { mode: st.blendMode, w2: st.blendWeights2.slice(), w3: st.blendWeights3.slice() };
+    phoneOnlyBlend(stem);
+  }
+  ctl[stem] = to;
+  refreshCards(); refreshSpatialPanel();
+}
+
+function toggleControl(via, stem) {
+  setControl(stem, ctl[stem] === via ? null : via);
+  buzz(15);
 }
 
 function centerStem(stem) {
@@ -410,6 +501,7 @@ function setSourceOn(stem, which, on) {
   }
 }
 
+bindSegRow($('ctlRow'), (v) => { if (activeSpatialStem) setControl(activeSpatialStem, ctlName[v]); });
 bindSegRow(blendModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'blendMode', v); refreshSpatialPanel(); } });
 bindSegRow(fftModeRow, (v) => {
   const stem = activeSpatialStem;
@@ -426,6 +518,17 @@ bindSegRow(presetModeRow, (v) => {
   else { sendSpatial(stem, 'presetMode', v); if (presetWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'preset', true); }
   refreshSpatialPanel();
 });
+// Auto role: the whole role table (js/roles.js) sent through the ordinary
+// spatial setters, so the panel then shows - and can adjust - exactly what it set.
+function applyRole(stem) {
+  SSRoles.plan(stem, ALL_STEMS.indexOf(stem)).forEach(([param, value]) => sendSpatial(stem, param, value));
+}
+bindSegRow($('roleRow'), (v) => {
+  if (!activeSpatialStem) return;
+  if (v === 'all') ALL_STEMS.forEach(applyRole); else applyRole(activeSpatialStem);
+  refreshSpatialPanel();
+});
+
 bindSegRow(smoothingModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'smoothingMode', v); refreshSpatialPanel(); } });
 bindSegRow(tempoSourceRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'tempoSource', v); refreshSpatialPanel(); } });
 
@@ -470,21 +573,21 @@ function openSpatialPanel(stem) {
     spatialStemName.textContent = stem.toUpperCase();
     spatialStemName.style.color = STEM_COLOR[stem];
     refreshSpatialPanel();
-    // The panel opens under all the cards; on a phone that is a screen or
-    // more below the button that opened it.
-    const top = spatialPanel.getBoundingClientRect().top;
-    if (top > window.innerHeight - 120) spatialPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
+  syncSideCol();
   refreshCards();
 }
-$('spatialCloseBtn').addEventListener('click', () => {
-  const stem = activeSpatialStem;
-  if (!stem) return;
-  openSpatialPanel(stem);
-  // Back to the card it came from, so closing does not strand you at the bottom.
-  const r = cards[stem].card.getBoundingClientRect();
-  if (r.top < 0 || r.bottom > window.innerHeight) cards[stem].card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-});
+$('spatialCloseBtn').addEventListener('click', () => { if (activeSpatialStem) openSpatialPanel(activeSpatialStem); });
+
+// The SPATIAL and LED panels live in a side column (a left drawer on a
+// narrower desktop, a bottom sheet on a phone) so they open beside the cards
+// instead of under all of them.
+function syncSideCol() {
+  const open = activeSpatialStem !== null || activeLedStem !== null;
+  $('sideCol').hidden = !open;
+  $('app').classList.toggle('has-side', open);
+  if (typeof railSync === 'function') railSync();
+}
 
 // Which choices are lit and which sub-rows are shown. Only what is actually
 // shaping the stem's motion is highlighted: an FFT or preset source with no
@@ -493,6 +596,8 @@ $('spatialCloseBtn').addEventListener('click', () => {
 function refreshSpatialRows() {
   if (!activeSpatialStem) return;
   const st = spatial[activeSpatialStem];
+  syncControl(activeSpatialStem);
+  setSegActive($('ctlRow'), Math.max(0, ctlName.indexOf(ctl[activeSpatialStem])));
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
   setSegActive(blendModeRow, st.blendMode);
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
@@ -507,6 +612,7 @@ function refreshSpatialRows() {
     smoothingHint.textContent = (st.smoothingMode === 1 ? 'Quiet = smooth glide, loud = up to Max.' : 'Loud = smooth glide, quiet = up to Max.') +
       ' Now ' + motion.stems[activeSpatialStem].smoothingNow.toFixed(2) + '.';
   }
+  $('roleLabel').textContent = (SSRoles.ROLES[activeSpatialStem] || {}).label || '';
   fftSrcBlock.hidden = !fftOn;
   presetRateBlock.hidden = !presetOn;
   tempoBlock.hidden = !(presetOn && st.presetMode === 2);
@@ -1299,6 +1405,25 @@ document.addEventListener('drop', (e) => {
   if (e.dataTransfer) filesFromDataTransfer(e.dataTransfer).then(addFiles);
 });
 
+// Drop an audio file on a stem card: it becomes that stem of the loaded song,
+// live (placing a stem the song lacked, or replacing the one it had). It is
+// not saved with the song - loading the song again brings back the original.
+async function dropOnStem(stem, file) {
+  if (!file) { toast('Drop an audio file (wav, mp3, flac, ...) on a stem to put it there.', 3600); return; }
+  if (!engine.song) { toast('Load a song first, then drop a file on one of its stems.', 3600); return; }
+  toast('Loading ' + file.name + ' into ' + stem.toUpperCase() + '...', 60000);
+  try {
+    const d = await SSSongs.decodeStemFile(file, engine);
+    if (!engine.setStemAudio(stem, d.pair, d.sampleRate)) throw new Error('no song loaded');
+    if (loadedSong) loadedSong.slots[ALL_STEMS.indexOf(stem)] = true;
+    renderSongs(); updateStemLabel(); refreshCards(); requestRadar();
+    toast(file.name + ' is now ' + stem.toUpperCase() + ' (until the song is loaded again)', 4200);
+    buzz(20);
+  } catch (e) {
+    toast('Could not use ' + file.name + ': ' + (e.message || e.name), 4600);
+  }
+}
+
 /* ---------------- stem splitter (SpatialStage Helper) ---------------- */
 
 // A plain song (kind 'single': one stereo mix) can be split into stems by
@@ -1883,6 +2008,7 @@ function openLedPanel(stem) {
     $('ledStemName').textContent = stem.toUpperCase();
     refreshLedPanel();
   }
+  syncSideCol();
   refreshCards();
 }
 function refreshLedPanel() {
@@ -1912,11 +2038,11 @@ function updateStemLabel() {
 
 // Applies the CHANGE in the control, not its absolute value, so a placed
 // stem rotates from where it was put rather than snapping to the slider.
-function applyRotation(value) {
+function applyRotation(value, via) {
   const d = value - lastSliderValue;
   lastSliderValue = value;
   if (!d) return;
-  rotateArmedBy(d);
+  rotateArmedBy(d, via);
   val.textContent = Math.round(value) + '°';
   refreshCards(); requestRadar();
 }
@@ -1949,13 +2075,13 @@ const phoneTurn = new SSPhoneTurn();
 const sensorOptions = $('sensorOptions'), sensorModeRow = $('sensorModeRow'), phoneInvertRow = $('phoneInvertRow');
 const turnCalBtn = $('turnCalBtn'), turnCalOut = $('turnCalOut'), sensorDbg = $('sensorDbg');
 let motionProbe = null;
-phoneTurn.onTurn = (turn) => { slider.value = turn; applyRotation(turn); };
+phoneTurn.onTurn = (turn) => { slider.value = turn; applyRotation(turn, 'phone'); };
 phoneTurn.onReading = (text) => { sensorDbg.textContent = text; };
 // The first real reading: a desktop browser happily accepts the listener
 // and then never fires it, so the button only claims "active" after one.
 phoneTurn.onFirst = () => {
   lastSliderValue = Number(slider.value);   // carry on from the slider's rotation
-  sensorBtn.textContent = 'Motion Active (tap to turn off)';
+  sensorBtn.textContent = 'Phone motion: on';
   wantWakeLock = true; requestWakeLock();
   sensorOptions.hidden = false;
   buzz([40, 40, 40]);
@@ -1979,32 +2105,34 @@ turnCalBtn.addEventListener('click', () => {
 });
 $('turnCalResetBtn').addEventListener('click', () => { turnCalOut.textContent = phoneTurn.resetCalibration(); turnCalBtn.textContent = 'Calibrate 360°'; });
 
-sensorBtn.addEventListener('click', async () => {
-  if (phoneTurn.bound) { unbindOrientation(); toast('Motion off - the stems stay where they are'); return; }
-  if (!window.isSecureContext) {
-    alert('Motion sensors need an https:// page (or localhost). Open this page over https to use phone rotation; the dials and slider still work.');
-    return;
-  }
-  if (typeof DeviceOrientationEvent === 'undefined') { toast('This browser has no motion sensor support - use the rotate slider or the dials.', 3600); return; }
+// Motion follows the stems' control setting: it turns itself on while any
+// stem is set to Phone and off when none is (syncSources, below).
+let motionBlocked = false;
+async function startMotion() {
+  if (phoneTurn.bound) return;
+  if (!window.isSecureContext) { motionBlocked = true; sensorBtn.textContent = 'Phone motion needs an https:// page (or localhost)'; return; }
+  if (typeof DeviceOrientationEvent === 'undefined') { motionBlocked = true; sensorBtn.textContent = 'No motion sensor in this browser'; return; }
   if (typeof DeviceOrientationEvent.requestPermission === 'function') {
     try {
       const res = await DeviceOrientationEvent.requestPermission();
-      if (res === 'granted') bindOrientation(); else alert('Motion permission denied');
-    } catch (e) { alert('Error requesting motion permission: ' + e.message); }
+      if (res === 'granted') bindOrientation(); else { motionBlocked = true; sensorBtn.textContent = 'Motion permission denied - tap the page to ask again'; }
+    } catch (e) { motionBlocked = true; sensorBtn.textContent = 'Phone motion: tap anywhere to allow'; }
   } else {
     bindOrientation();
   }
-});
+}
 
 function bindOrientation() {
   phoneTurn.bind();
   sensorBtn.classList.add('active');
-  sensorBtn.textContent = 'Motion: waiting for sensor...';
+  sensorBtn.textContent = 'Phone motion: waiting for sensor...';
   showSensorOptions();
   clearTimeout(motionProbe);
   motionProbe = setTimeout(() => {
     if (phoneTurn.bound && !phoneTurn.seen) {
+      motionBlocked = true;
       unbindOrientation();
+      sensorBtn.textContent = 'No motion sensor found on this device';
       toast('No motion sensor found on this device - use the rotate slider, the dials or hand tracking instead.', 4200);
     }
   }, 2500);
@@ -2014,17 +2142,21 @@ function unbindOrientation() {
   phoneTurn.unbind();
   clearTimeout(motionProbe);
   sensorBtn.classList.remove('active');
-  sensorBtn.textContent = 'Enable Motion';
+  sensorBtn.textContent = 'Phone motion: off (set a stem to Phone)';
   sensorDbg.textContent = '';
   turnCalBtn.textContent = 'Calibrate 360°';
   releaseWakeLockIfUnused();
 }
 
+// Zero / Centre all: every stem goes to the centre and becomes its own anchor
+// point, and the sensor's current heading becomes 0, so every movement -
+// phone, camera, FFT, preset - restarts from the centre.
 calibrateBtn.addEventListener('click', () => {
   phoneTurn.zero();
   lastSliderValue = 0;
   slider.value = 0;
-  val.textContent = '0°';
+  val.textContent = '0\u00b0';
+  for (const stem of ALL_STEMS) placeStem(stem, 0);
   buzz(50);
 });
 
@@ -2061,7 +2193,7 @@ function handToRadar(h) {
 function nearestStemTo(az) {
   let best = null, bestD = GRAB_RADIUS_DEG;
   for (const s of ALL_STEMS) {
-    if (mutedStems.has(s) || !stemShown(s)) continue;
+    if (mutedStems.has(s) || !stemShown(s) || ctl[s] !== 'cam') continue;
     if (handState.some(st => st.grab === s)) continue; // the other hand has it
     const d = Math.abs(wrap180(motion.stems[s].effective - az));
     if (d < bestD) { bestD = d; best = s; }
@@ -2082,7 +2214,7 @@ function handleHands(hands) {
         if (st.grab !== 'group') hintIfParked(st.grab);
         buzz(10);
       } else if (h.pinch && st.grab) {
-        if (st.grab === 'group') rotateArmedBy(wrap180(az - st.lastAz));
+        if (st.grab === 'group') rotateArmedBy(wrap180(az - st.lastAz), 'cam');
         else placeStem(st.grab, Math.round(az));
         st.lastAz = az;
       } else if (!h.pinch && st.grab) {
@@ -2097,7 +2229,7 @@ function handleHands(hands) {
       const { az } = handToRadar(h);
       if (h.fist) { st.grab = null; }
       else if (!st.grab) { st.grab = 'group'; st.lastAz = az; }
-      else { rotateArmedBy(wrap180(az - st.lastAz)); st.lastAz = az; }
+      else { rotateArmedBy(wrap180(az - st.lastAz), 'cam'); st.lastAz = az; }
     }
   }
   refreshCards(); requestRadar();
@@ -2132,34 +2264,66 @@ function refreshHandStatus(hands) {
   handStatus.classList.add('on');
 }
 
-handBtn.addEventListener('click', async () => {
-  if (hand.running) {
-    hand.stop();
-    handBtn.classList.remove('active'); handBtn.textContent = 'Hand Tracking (camera)';
-    handLayer.textContent = '';
-    for (const st of handState) st.grab = null;
-    handPanel.hidden = true; // a black camera box with nothing in it is just clutter
-    releaseWakeLockIfUnused();
-    return;
-  }
+// Camera tracking follows the stems' control setting like motion does: it
+// starts when a stem is set to CAM and stops when none is (syncSources).
+let handBlocked = false, handStarting = false;
+function stopHands() {
+  hand.stop();
+  handBtn.classList.remove('active'); handBtn.textContent = 'Camera tracking: off (set a stem to Camera)';
+  handLayer.textContent = '';
+  for (const st of handState) st.grab = null;
+  handPanel.hidden = true; // a black camera box with nothing in it is just clutter
+  releaseWakeLockIfUnused();
+}
+async function startHands() {
+  if (handStarting || hand.running) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    alert('This browser cannot open the camera here. Hand tracking needs https:// (or localhost) and a camera.');
+    handBlocked = true; handBtn.textContent = 'Camera needs https:// (or localhost)';
     return;
   }
+  handStarting = true;
   handPanel.hidden = false;
-  handBtn.disabled = true; handBtn.textContent = 'Starting camera...';
+  handBtn.textContent = 'Starting camera...';
   try {
     await hand.start(handVideo, handCanvas);
     camBox.classList.toggle('mirror', hand.mirror);
     $('handMirrorBtn').textContent = 'Mirror: ' + (hand.mirror ? 'on' : 'off');
-    handBtn.classList.add('active'); handBtn.textContent = 'Hand Tracking: on (tap to stop)';
+    handBtn.classList.add('active'); handBtn.textContent = 'Camera tracking: on';
     wantWakeLock = true; requestWakeLock();
     buzz([30, 30, 30]);
   } catch (e) {
+    handBlocked = true;
     handStatus.textContent = 'could not start: ' + e.message;
-    handBtn.textContent = 'Hand Tracking (camera)';
+    handBtn.textContent = 'Camera could not start - tap the page to retry';
   }
-  handBtn.disabled = false;
+  handStarting = false;
+}
+
+// Keep the sensors matched to what the stems are set to. Blocked sources
+// (no permission, no https) retry on the next tap, which iOS needs anyway.
+function syncSources() {
+  const anyPhone = ALL_STEMS.some((s) => ctl[s] === 'phone');
+  const anyCam = ALL_STEMS.some((s) => ctl[s] === 'cam');
+  if (anyPhone && !phoneTurn.bound && !motionBlocked) startMotion();
+  else if (!anyPhone && phoneTurn.bound) { unbindOrientation(); toast('Motion off - the stems stay where they are'); }
+  if (anyCam && !hand.running && !handStarting && !handBlocked) startHands();
+  else if (!anyCam && hand.running) stopHands();
+  else if (!anyCam && !handStarting && !handPanel.hidden && !hand.running) handPanel.hidden = true;
+}
+document.addEventListener('pointerdown', () => { motionBlocked = false; handBlocked = false; syncSources(); });
+setInterval(syncSources, 1000);
+
+// Dim: a black cover that keeps the page running and the screen awake, so
+// phone control carries on while it looks switched off.
+const dimOverlay = $('dimOverlay');
+$('dimBtn').addEventListener('click', () => {
+  dimOverlay.hidden = false;
+  wantWakeLock = true; requestWakeLock();
+});
+dimOverlay.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  dimOverlay.hidden = true;
+  releaseWakeLockIfUnused();
 });
 
 bindSegRow(handModeRow, (v) => {
@@ -2181,7 +2345,7 @@ $('handFlipBtn').addEventListener('click', async () => {
   camBox.classList.toggle('mirror', hand.mirror);
   $('handMirrorBtn').textContent = 'Mirror: ' + (hand.mirror ? 'on' : 'off');
   if (!hand.running) {
-    handBtn.classList.remove('active'); handBtn.textContent = 'Hand Tracking (camera)';
+    handBtn.classList.remove('active'); handBtn.textContent = 'Camera tracking: off (set a stem to Camera)';
     handLayer.textContent = '';
     releaseWakeLockIfUnused();
   }
@@ -2212,3 +2376,68 @@ updateStemLabel(); refreshCards(); drawRadar(); renderSongs(); refreshTransportB
 // before the user knows there is a helper at all.
 refreshHelperUi(); refreshLed();
 if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); refreshLed(); });
+
+/* ---------------- app shell: window rail ---------------- */
+// One icon per window down the right edge: tap to show or hide it (a phone
+// shows one at a time). Identical in the web app and the rig page - PARITY.md.
+(function () {
+  const ICON = {
+    stemCol: '<path d="M6 4v16M12 4v16M18 4v16"/><circle cx="6" cy="9" r="2"/><circle cx="12" cy="15" r="2"/><circle cx="18" cy="8" r="2"/>',
+    centerCol: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>',
+    songCol: '<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/>',
+    sepCol: '<path d="M12 3v6l-6 4v8M12 9l6 4v8"/>',
+    spatial: '<circle cx="12" cy="12" r="2.5"/><path d="M6.5 12a5.5 5.5 0 0 1 11 0M3 12a9 9 0 0 1 18 0"/>',
+  };
+  const LABEL = { stemCol: 'Stems', centerCol: 'Control', songCol: 'Songs', sepCol: 'Split', spatial: 'Spatial' };
+  const ids = ['stemCol', 'centerCol', 'songCol', 'sepCol'].filter((id) => document.getElementById(id));
+  const KEY = 'spatialstage.panels';
+  const narrow = window.matchMedia('(max-width: 899px)');
+  let shown = new Set(['stemCol', 'centerCol', 'songCol']);
+  try { const v = JSON.parse(localStorage.getItem(KEY)); if (Array.isArray(v) && v.length) shown = new Set(v); } catch (e) {}
+  let pick = 'centerCol';          // the one window a phone shows
+  let lastStem = null;
+  const rail = document.createElement('nav');
+  rail.id = 'rail'; rail.setAttribute('aria-label', 'Windows');
+  const btns = {};
+  for (const id of [...ids, 'spatial']) {
+    const b = document.createElement('button');
+    b.className = 'rail-btn'; b.type = 'button';
+    b.title = id === 'spatial' ? 'Spatial / LED settings for a stem' : 'Show or hide the ' + LABEL[id] + ' window';
+    b.innerHTML = '<svg viewBox="0 0 24 24">' + ICON[id] + '</svg><span>' + LABEL[id] + '</span>';
+    b.addEventListener('click', () => id === 'spatial' ? toggleSide() : toggle(id));
+    rail.appendChild(b); btns[id] = b;
+  }
+  document.body.appendChild(rail);
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    const h = document.createElement('button');
+    h.className = 'pn-hide'; h.type = 'button'; h.innerHTML = '&minus;'; h.title = 'Collapse this window (bring it back from the rail)';
+    h.addEventListener('click', () => toggle(id));
+    el.appendChild(h);
+  }
+  function visible(id) { return narrow.matches ? id === pick : shown.has(id); }
+  function toggle(id) {
+    if (narrow.matches) pick = id;
+    else if (shown.has(id)) shown.delete(id); else shown.add(id);
+    try { localStorage.setItem(KEY, JSON.stringify([...shown])); } catch (e) {}
+    apply();
+  }
+  function sideOpen() { return activeSpatialStem !== null || activeLedStem !== null; }
+  function toggleSide() {
+    if (sideOpen()) { if (activeSpatialStem) openSpatialPanel(activeSpatialStem); if (activeLedStem) openLedPanel(activeLedStem); }
+    else openSpatialPanel(lastStem || ALL_STEMS[0]);
+  }
+  function apply() {
+    for (const id of ids) {
+      document.getElementById(id).hidden = !visible(id);
+      btns[id].classList.toggle('on', visible(id));
+    }
+    railSync();
+  }
+  window.railSync = function () {
+    if (activeSpatialStem) lastStem = activeSpatialStem;
+    btns.spatial.classList.toggle('on', sideOpen());
+  };
+  narrow.addEventListener('change', apply);
+  apply();
+})();

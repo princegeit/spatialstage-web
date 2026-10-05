@@ -161,6 +161,14 @@
           this.fftAz = this.onsetAz;
         } else if (p.fftMode < 2.5) {
           this.fftAz = this.bandSmooth.tick(this._bandLevel(nodes.bandAnalyser));
+        } else if (p.fftMode >= 3.5) {
+          // 4 Follow = the stem's own stereo position, 5 Sections = a spot
+          // per section of the song (both from js/curves.js).
+          const cur = engine.curveOf(srcStem, p.fftMode < 4.5 ? 'balance' : 'sections');
+          if (cur && engine.song.duration > 0) {
+            const idx = Math.min(cur.length - 1, Math.max(0, Math.floor(engine.position() / engine.song.duration * cur.length)));
+            this.fftAz = cur[idx] * 360 - 180;
+          }
         } else {
           const env = engine.envelopeOf(srcStem);
           if (env && engine.song.duration > 0) {

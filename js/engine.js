@@ -321,7 +321,7 @@
       // Envelopes are filled in by envelopeOf() the first time precalc mode
       // asks for one - most songs never use it, and computing them all up
       // front cost a noticeable pause on every load.
-      this.song = { name: song.name, buffers, duration, envelopes: {} };
+      this.song = { name: song.name, buffers, duration, envelopes: {}, curves: {} };
       this.offset = 0;
       this._changed();
       return this.song;
@@ -338,6 +338,39 @@
     // Stems the loaded song has audio for.
     hasStem(stem) { return !!(this.song && this.song.buffers[stem]); }
 
+    // Put (or replace) one stem's audio in the loaded song, live: if the song
+    // is playing, that stem carries on from the current position with the new
+    // audio. Lasts until the song is loaded again.
+    setStemAudio(stem, pair, sampleRate) {
+      if (!this.song || !this.ctx) return false;
+      const buf = this.ctx.createBuffer(2, pair[0].length, sampleRate);
+      buf.copyToChannel(pair[0], 0); buf.copyToChannel(pair[1], 1);
+      const song = this.song;
+      song.buffers[stem] = buf;
+      delete song.envelopes[stem];
+      for (const k of Object.keys(song.curves)) if (k.endsWith(':' + stem)) delete song.curves[k];
+      song.duration = Math.max(song.duration, buf.duration);
+      if (this.playing && this.sources) {
+        const old = this.sources[stem];
+        if (old) { try { old.onended = null; old.stop(); } catch (e) {} }
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(this.nodes[stem].input);
+        src.start(0, Math.min(this.position(), buf.duration));
+        this.sources[stem] = src;
+        // the song ends with its longest stem, which may now be another one
+        let longest = null;
+        for (const s in this.sources) {
+          this.sources[s].onended = null;
+          if (!longest || this.sources[s].buffer.duration > longest.buffer.duration) longest = this.sources[s];
+        }
+        const end = longest;
+        end.onended = () => { if (this.sources && Object.values(this.sources).includes(end) && this.playing) this._finished(); };
+      }
+      this._changed();
+      return true;
+    }
+
     envelopeOf(stem) {
       const song = this.song;
       if (!song || !song.buffers[stem]) return null;
@@ -346,6 +379,19 @@
         song.envelopes[stem] = computeEnvelope(buf.getChannelData(0), buf.getChannelData(1));
       }
       return song.envelopes[stem];
+    }
+
+    // Follow / Sections curves (curves.js), same 0..1 table format and the
+    // same lazy per-song cache as the envelope above.
+    curveOf(stem, kind) {
+      const song = this.song;
+      if (!song || !song.buffers[stem]) return null;
+      const key = kind + ':' + stem;
+      if (!song.curves[key]) {
+        const buf = song.buffers[stem], L = buf.getChannelData(0), R = buf.getChannelData(1);
+        song.curves[key] = kind === 'balance' ? SSCurves.balance(L, R) : SSCurves.sections(L, R, buf.sampleRate).curve;
+      }
+      return song.curves[key];
     }
 
     /* ---------------- transport ---------------- */
