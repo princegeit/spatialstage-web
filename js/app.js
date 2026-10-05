@@ -2174,6 +2174,9 @@ async function fillDevices() {
   const def = document.createElement('option');
   def.value = ''; def.textContent = 'Default input';
   extDeviceEl.appendChild(def);
+  const sys = document.createElement('option');
+  sys.value = engine.systemAudioId; sys.textContent = 'System audio (share a screen or tab)';
+  extDeviceEl.appendChild(sys);
   for (const d of list) {
     if (!d.deviceId || d.deviceId === 'default') continue;
     const o = document.createElement('option');

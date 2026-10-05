@@ -30,6 +30,7 @@
   const BRANCH_GAIN = 0.5;  // stereo build's per-branch gain, matches level with the mono build
   const ENV_FRAME = 2048, ENV_HOP = 512, ENV_POINTS = 1000; // precompute_fft_envelope.py
   const SPEAKERS = [-45, 45, -135, 135];   // quad_pan.pd: FL, FR, RL, RR
+  const SYSTEM_AUDIO = '__system__';        // setLive deviceId for "what the screen or a tab is playing"
 
   const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
   const quadGain = (angle, speaker) => Math.cos(Math.min(Math.abs(wrap180(angle - speaker)), 90) * Math.PI / 180);
@@ -485,6 +486,8 @@
       return { channels: have };
     }
 
+    get systemAudioId() { return SYSTEM_AUDIO; }
+
     setLiveGain(stem, gain) {
       const l = this.live[stem];
       if (!l) return;
@@ -496,9 +499,24 @@
       let e = this.inputs.get(deviceId);
       if (e && e.stream.getAudioTracks().some((t) => t.readyState === 'live')) return e;
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('this browser cannot open audio inputs here (it needs https:// or localhost)');
+
       const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 8 } };
-      if (deviceId) audio.deviceId = { exact: deviceId };
-      const stream = await navigator.mediaDevices.getUserMedia({ audio });
+      if (deviceId && deviceId !== SYSTEM_AUDIO) audio.deviceId = { exact: deviceId };
+      let stream;
+      if (deviceId === SYSTEM_AUDIO) {
+        // Whatever a screen or a browser tab is playing (Ableton, a media player, another page): the
+        // browser's own "share" picker, audio only is kept. Chrome and Edge: tick "Share system audio" (entire
+        // screen) or "Share tab audio".
+        if (!navigator.mediaDevices.getDisplayMedia) throw new Error('this browser cannot capture system or tab audio');
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+        stream.getVideoTracks().forEach((t) => t.stop());
+        if (!stream.getAudioTracks().length) {
+          stream.getTracks().forEach((t) => t.stop());
+          throw new Error('no audio was shared - pick a screen with "Share system audio", or a tab with "Share tab audio"');
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ audio });
+      }
       const track = stream.getAudioTracks()[0];
       const channels = Math.max(1, (track && track.getSettings().channelCount) || 2);
       const source = this.ctx.createMediaStreamSource(stream);
