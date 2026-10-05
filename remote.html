@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SpatialStage Remote</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: #eee; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+         padding: 16px calc(16px + env(safe-area-inset-right)) calc(28px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
+  main { max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 1.25rem; margin: 4px 0 2px; }
+  .sub { color: #999; font-size: 0.85rem; margin: 0 0 16px; line-height: 1.45; }
+  .step { margin: 18px 0 6px; font-size: 0.8rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #0f8; }
+  textarea { width: 100%; min-height: 96px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px;
+             padding: 10px; font: 0.72rem/1.35 ui-monospace, Consolas, monospace; resize: vertical; -webkit-user-select: text; user-select: text; word-break: break-all; }
+  button { background: #333; color: #eee; border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; padding: 12px 14px; font-size: 0.95rem; font-weight: 700; cursor: pointer; }
+  button.main { background: #0f8; color: #111; border-color: #0f8; width: 100%; margin-top: 8px; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row > button { flex: 1; }
+  #status { margin: 14px 0 0; font-size: 0.9rem; color: #aaa; min-height: 1.3em; }
+  #status.ok { color: #0f8; }
+  #status.bad { color: #ff8866; }
+  #live { font-variant-numeric: tabular-nums; font-size: 2.6rem; text-align: center; margin: 10px 0 0; }
+  .hint { color: #777; font-size: 0.72rem; line-height: 1.4; margin-top: 6px; }
+  .seg { display: flex; gap: 6px; margin-top: 8px; }
+  .seg button { flex: 1; padding: 9px 4px; font-size: 0.8rem; color: #999; }
+  .seg button.on { color: #0f8; border-color: rgba(0,255,136,0.5); background: rgba(0,255,136,0.1); }
+  [hidden] { display: none !important; }
+  #dim { position: fixed; inset: 0; background: #000; z-index: 10; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 28px; color: #262626; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SpatialStage Remote</h1>
+  <p class="sub">Turn this phone into the motion control for a SpatialStage web app running on another computer. Nothing is installed on the PC: the two pages talk directly to each other.</p>
+
+  <div id="pairing">
+    <div class="step">1 &middot; Paste the code from the PC</div>
+    <textarea id="offer" placeholder="On the PC, open the web app, Control window &rarr; Pair a phone, copy the code and paste it here" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <button class="main" id="pairBtn">Make my reply code</button>
+
+    <div id="replyBox" hidden>
+      <div class="step">2 &middot; Send this reply back to the PC</div>
+      <textarea id="reply" readonly></textarea>
+      <div class="row"><button id="copyBtn">Copy reply</button><button id="shareBtn" hidden>Share&hellip;</button></div>
+      <div class="hint">Paste it into the PC web app (the "reply" box) and press Connect.</div>
+    </div>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="controls" hidden>
+    <div id="live">0&deg;</div>
+    <div class="row"><button id="zeroBtn">Zero / centre all</button><button id="dimBtn">Dim screen</button></div>
+    <div class="seg" id="invertRow"><button data-v="0">Turn: normal</button><button data-v="1">Turn: inverted</button></div>
+    <div class="seg" id="modeRow"><button data-v="1">Compass</button><button data-v="0">Gyro</button></div>
+    <div class="hint" id="note"></div>
+  </div>
+</main>
+<div id="dim" hidden>Remote is still on &middot; tap to wake</div>
+
+<script src="js/sensor.js"></script>
+<script src="js/pair.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const native = typeof window.SSNative !== 'undefined';   // inside the SpatialStage Rig app: its service reads the sensor, screen off or on
+const turn = new SSPhoneTurn();
+const guest = new SSPair.Guest();
+let live = 0, lastSent = null, sendTimer = null;
+
+function status(text, kind) { const el = $('status'); el.textContent = text; el.className = kind || ''; }
+
+// Turn -> the PC, at most ~30 times a second (the newest value always goes out).
+turn.onTurn = (deg) => {
+  live = deg;
+  $('live').textContent = Math.round(deg) + '°';
+  if (sendTimer) return;
+  sendTimer = setTimeout(() => {
+    sendTimer = null;
+    const v = Math.round(live * 10) / 10;
+    if (v !== lastSent) { lastSent = v; guest.send({ t: 'turn', v }); }
+  }, 33);
+};
+window.ssHeading = (h) => turn.feedHeading(h);   // called by the app's background service
+
+guest.onState = (st, connected) => {
+  if (connected) {
+    status('Connected to the PC. Turn your body to steer the stems set to Phone.', 'ok');
+    $('pairing').hidden = true; $('controls').hidden = false;
+    guest.send({ t: 'hello', app: native });
+    lastSent = null; turn.zero(); startWake();
+  } else if (st === 'failed' || st === 'closed' || st === 'disconnected') {
+    status('Connection lost (' + st + '). Make a new code on the PC and pair again.', 'bad');
+    $('pairing').hidden = false; $('controls').hidden = true;
+  }
+};
+guest.onMessage = (m) => { if (m.t === 'hello') $('note').textContent = 'The PC page is listening.'; };
+
+async function startMotion() {
+  if (native) { SSNative.startHeadings(); SSNative.setAbsolute(turn.useAbsolute); return true; }
+  if (!window.isSecureContext) { status('Motion sensors need an https:// page.', 'bad'); return false; }
+  if (typeof DeviceOrientationEvent === 'undefined') { status('This browser has no motion sensor support.', 'bad'); return false; }
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { if ((await DeviceOrientationEvent.requestPermission()) !== 'granted') { status('Motion permission denied.', 'bad'); return false; } }
+    catch (e) { status('Could not ask for motion permission: ' + e.message, 'bad'); return false; }
+  }
+  turn.bind();
+  // Many phones have no compass-fused stream: fall back to the gyro one if nothing arrives.
+  setTimeout(() => {
+    if (turn.bound && !turn.seen && turn.useAbsolute) { turn.useAbsolute = false; turn.bind(); showModes(); }
+  }, 3000);
+  return true;
+}
+
+$('pairBtn').addEventListener('click', async () => {
+  $('pairBtn').disabled = true;
+  status('Working...');
+  try {
+    if (!(await startMotion())) { $('pairBtn').disabled = false; return; }
+    const reply = await guest.join($('offer').value);
+    $('reply').value = reply;
+    $('replyBox').hidden = false;
+    if (navigator.share) $('shareBtn').hidden = false;
+    status('Now copy the reply to the PC and press Connect there.');
+  } catch (e) { status(e.message || String(e), 'bad'); }
+  $('pairBtn').disabled = false;
+});
+$('copyBtn').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('reply').value); status('Reply copied.'); }
+  catch (e) { $('reply').select(); status('Select the reply and copy it.'); }
+});
+$('shareBtn').addEventListener('click', () => { navigator.share({ text: $('reply').value }).catch(() => {}); });
+
+$('zeroBtn').addEventListener('click', () => { turn.zero(); lastSent = null; guest.send({ t: 'zero' }); });
+function showModes() {
+  for (const b of $('invertRow').children) b.classList.toggle('on', (b.dataset.v === '1') === turn.invert);
+  for (const b of $('modeRow').children) b.classList.toggle('on', (b.dataset.v === '1') === turn.useAbsolute);
+}
+$('invertRow').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { turn.setInvert(b.dataset.v === '1'); showModes(); } });
+$('modeRow').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  turn.setAbsolute(b.dataset.v === '1');
+  if (native) SSNative.setAbsolute(turn.useAbsolute);
+  showModes();
+});
+showModes();
+if (!native && !turn.absoluteAvailable) $('modeRow').hidden = true;
+$('note').textContent = native ? 'Running in the Rig app: keeps working with the screen off.' : 'In a browser the screen has to stay on (use Dim screen to darken it).';
+
+// Dim: a black cover that keeps this page - and the screen - awake.
+$('dimBtn').addEventListener('click', () => { $('dim').hidden = false; startWake(); if (native) SSNative.dim(true); });
+$('dim').addEventListener('pointerdown', () => { $('dim').hidden = true; if (native) SSNative.dim(false); });
+
+let wake = null;
+async function startWake() { try { if ('wakeLock' in navigator && !wake) wake = await navigator.wakeLock.request('screen'); wake && wake.addEventListener('release', () => { wake = null; }); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && guest.connected) startWake(); });
+</script>
+</body>
+</html>

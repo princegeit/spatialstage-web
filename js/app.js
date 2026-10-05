@@ -2253,6 +2253,7 @@ $('turnCalResetBtn').addEventListener('click', () => { turnCalOut.textContent = 
 // Motion follows the stems' control setting: it turns itself on while any
 // stem is set to Phone and off when none is (syncSources, below).
 let motionBlocked = false;
+let pairLive = false;   // a phone is paired (js/pair.js) and sending its turn
 async function startMotion() {
   if (phoneTurn.bound) return;
   if (!window.isSecureContext) { motionBlocked = true; sensorBtn.textContent = 'Phone motion needs an https:// page (or localhost)'; return; }
@@ -2461,7 +2462,7 @@ async function startHands() {
 function syncSources() {
   const anyPhone = ALL_STEMS.some((s) => ctl[s] === 'phone');
   const anyCam = ALL_STEMS.some((s) => ctl[s] === 'cam');
-  if (anyPhone && !phoneTurn.bound && !motionBlocked) startMotion();
+  if (anyPhone && !phoneTurn.bound && !motionBlocked && !pairLive) startMotion();
   else if (!anyPhone && phoneTurn.bound) { unbindOrientation(); toast('Motion off - the stems stay where they are'); }
   if (anyCam && !hand.running && !handStarting && !handBlocked) startHands();
   else if (!anyCam && hand.running) stopHands();
@@ -2469,6 +2470,48 @@ function syncSources() {
 }
 document.addEventListener('pointerdown', () => { motionBlocked = false; handBlocked = false; syncSources(); });
 setInterval(syncSources, 1000);
+
+/* ---------------- pair a phone (WebRTC, no server) ---------------- */
+
+// The phone (remote.html in its browser, or the Rig app) sends its turn straight to this page;
+// it steers the stems exactly like this device's own sensor would: armed stems set to Phone.
+// Zero / Centre on the phone presses this page's Zero / Centre all.
+(function () {
+  const host = new SSPair.Host();
+  const btn = $('pairBtn'), box = $('pairBox'), offerEl = $('pairOffer'), answerEl = $('pairAnswer'), st = $('pairStatus');
+  const say = (t) => { st.textContent = t; };
+  function live(on) {
+    pairLive = on;
+    if (on) { sensorBtn.classList.add('active'); sensorBtn.textContent = 'Phone motion: remote phone connected'; }
+    else if (!phoneTurn.bound) { sensorBtn.classList.remove('active'); sensorBtn.textContent = 'Phone motion: off (set a stem to Phone)'; }
+  }
+  btn.addEventListener('click', async () => {
+    box.hidden = false; answerEl.value = ''; offerEl.value = '';
+    say('Making a code (a few seconds)...');
+    btn.disabled = true;
+    try { offerEl.value = await host.offer(); say('Send the code to the phone, then paste its reply below.'); }
+    catch (e) { say('Could not make a code: ' + (e.message || e)); }
+    btn.disabled = false;
+  });
+  $('pairCopyBtn').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(offerEl.value); say('Code copied.'); }
+    catch (e) { offerEl.select(); say('Select the code and copy it.'); }
+  });
+  $('pairConnectBtn').addEventListener('click', async () => {
+    try { await host.accept(answerEl.value); say('Connecting...'); }
+    catch (e) { say(e.message || String(e)); }
+  });
+  host.onState = (state, connected) => {
+    if (connected) { say('Phone connected. Set a stem to Phone and turn.'); live(true); }
+    else if (state === 'failed' || state === 'closed' || state === 'disconnected') { say('Phone disconnected (' + state + ').'); live(false); }
+    else say('Connecting (' + state + ')...');
+  };
+  host.onMessage = (m) => {
+    if (m.t === 'turn' && Number.isFinite(m.v)) { slider.value = m.v; applyRotation(m.v, 'phone'); }
+    else if (m.t === 'zero') calibrateBtn.click();
+    else if (m.t === 'hello') host.send({ t: 'hello' });
+  };
+})();
 
 /* ---------------- phone as remote (through the bridge) ---------------- */
 
