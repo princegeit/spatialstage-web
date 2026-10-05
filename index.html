@@ -389,7 +389,11 @@
   .close-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #aaa; border-radius: 7px;
                width: 30px; height: 28px; font-size: 1.05rem; line-height: 1; cursor: pointer; flex: none; }
   .close-btn:hover { color: #eee; background: rgba(255,255,255,0.12); }
-  #sideCol #spatialPanel, #sideCol #ledPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+  #sideCol #spatialPanel, #sideCol #ledPanel, #sideCol #extPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+  .ext-btn.on { color: #ffb347; border-color: rgba(255,179,71,0.6); background: rgba(255,179,71,0.12); }
+  .ext-btn.open { background: rgba(255,255,255,0.16); }
+  .stem-card[hidden] { display: none; }
+  .ext-select { width: 100%; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 8px; font-size: 0.8rem; }
 
   /* --- rail: one icon per window, down the right edge --- */
   #rail { position: fixed; left: 0; top: 0; bottom: 0; width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
@@ -443,6 +447,27 @@
       <div class="weight-row"><label>Tail</label><input type="range" id="ledTail" min="0" max="3" step="0.1"><output id="ledTailOut"></output></div>
       <div class="field-label">Strips this stem lights (tap to switch a strip on or off for this stem)</div>
       <div class="seg-row" id="ledStripsRow"></div>
+    </div>
+
+    <div id="extPanel" hidden>
+      <div class="spatial-title"><span>EXTERNAL INPUT &mdash; <span id="extStemName"></span></span><button id="extCloseBtn" class="close-btn" title="Close" aria-label="Close external input panel">&times;</button></div>
+      <div class="hint left">Sound from a microphone, a line-in, a USB interface or a virtual cable is added to this stem and moves with it. The browser asks for permission the first time. Use headphones with a mic.</div>
+      <div class="field-label">Input device</div>
+      <select id="extDevice" class="ext-select"></select>
+      <div class="field-label">Channels of that device</div>
+      <div class="seg-row" id="extPairRow">
+        <button class="seg-btn" data-value="0">None</button>
+        <button class="seg-btn" data-value="1">1&ndash;2</button>
+        <button class="seg-btn" data-value="2">3&ndash;4</button>
+        <button class="seg-btn" data-value="3">5&ndash;6</button>
+        <button class="seg-btn" data-value="4">7&ndash;8</button>
+      </div>
+      <div class="field-label">Level (a line-level player may need less than a mic)</div>
+      <div class="weight-row"><label>Level</label><input type="range" id="extGain" min="0" max="2" step="0.01"><output id="extGainOut"></output></div>
+      <div class="hint left" id="extHint"></div>
+      <div id="extRemoveBlock">
+        <button id="extRemoveBtn" class="action" title="Take this stem out of the window again">Remove this stem</button>
+      </div>
     </div>
 
     <div id="spatialPanel" hidden>
@@ -583,6 +608,9 @@
   <section class="panel" id="stemCol">
     <div class="panel-title">Stems &mdash; drag dial to place &middot; ARM = follows rotate</div>
     <div class="stem-grid" id="stemGrid"></div>
+    <div class="quick-row">
+      <button id="addStemBtn" title="Add a stem that plays a sound input (a mic, a CD player, another program)">+ Add stem (live input)</button>
+    </div>
     <div class="quick-row">
       <button id="selectAllBtn">Arm All</button>
       <button id="selectNoneBtn">Arm None</button>

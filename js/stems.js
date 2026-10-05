@@ -14,16 +14,21 @@
 // on either side. Change one, change the other.
 (function () {
   'use strict';
+  // The last four have no file: they play a sound input (see engine.setLive) - pd/spatial/inputs.txt on
+  // the Pd side. A show file's channels, the pipeline and every song only know the first twelve.
   const STEMS = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other',
-                 'kick', 'snare', 'toms', 'hihat', 'ride', 'crash'];
+                 'kick', 'snare', 'toms', 'hihat', 'ride', 'crash',
+                 'input1', 'input2', 'input3', 'input4'];
   const BASE_STEMS = STEMS.slice(0, 6);
-  const DRUM_PARTS = STEMS.slice(6);
+  const DRUM_PARTS = STEMS.slice(6, 12);
+  const INPUT_STEMS = STEMS.slice(12);
 
   const LAYOUT = {
     vocals: [-15, 37], drums: [-45, 1], bass: [75, 0],
     guitar: [-75, 2], piano: [45, 8], other: [15, 50],
     kick: [0, 0], snare: [-10, 10], toms: [-40, 60],
     hihat: [30, 10], ride: [-60, 20], crash: [60, 40],
+    input1: [-30, 30], input2: [30, 30], input3: [-120, 30], input4: [120, 30],
   };
   const GEOMETRY = {};
   for (const s of STEMS) GEOMETRY[s] = { azimuth: LAYOUT[s][0], width: LAYOUT[s][1] };
@@ -33,6 +38,7 @@
     guitar: '#ff66aa', piano: '#ad6bff', other: '#00dddd',
     kick: '#ff4d4d', snare: '#ffa64d', toms: '#c98a4b',
     hihat: '#b3e0ff', ride: '#66e0b3', crash: '#f2f2f2',
+    input1: '#ffb347', input2: '#ff7ad9', input3: '#7ad7ff', input4: '#c4ff6a',
   };
 
   const ICONS = {
@@ -48,7 +54,9 @@
     hihat:  '<path d="M4 8.5h16M6 6.5h12M12 8.5V21M8 21h8"/>',
     ride:   '<ellipse cx="12" cy="9" rx="9" ry="2.5"/><circle cx="12" cy="8.4" r="1"/><path d="M12 11.5V21M9 21h6"/>',
     crash:  '<path d="M3 6.5l18 4"/><path d="M12 8.5V21M9 21h6"/><path d="M5 3.5l1.5 1M18 13.5l1.5.5"/>',
+    input1: '<path d="M9 3v5M15 3v5"/><rect x="6" y="8" width="12" height="6" rx="2"/><path d="M12 14v7"/>',
   };
+  ICONS.input2 = ICONS.input3 = ICONS.input4 = ICONS.input1;
 
   // What the drum splitter leaves in the drums slot once the parts are out
   // (pipeline/split_drums.py's LEFTOVER). Not a stem of its own: when a
@@ -118,7 +126,7 @@
     return { stem: best.stem, index, length: last + 1 - index };
   }
 
-  const api = { STEMS, BASE_STEMS, DRUM_PARTS, GEOMETRY, COLOR, ICONS, LEFTOVER, stemOfName };
+  const api = { STEMS, BASE_STEMS, DRUM_PARTS, INPUT_STEMS, GEOMETRY, COLOR, ICONS, LEFTOVER, stemOfName };
   if (typeof window !== 'undefined') window.SSStems = api;
   if (typeof module !== 'undefined') module.exports = api;   // for the Node tests
 })();

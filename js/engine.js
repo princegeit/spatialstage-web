@@ -53,6 +53,8 @@
       this.onEnded = null;
       this.onStateChange = null;
       this.recorder = null;
+      this.live = {};                      // stem -> { deviceId, pair, gain } of a live input in use
+      this.inputs = new Map();             // deviceId -> { stream, source, splitter, channels }
       this.azimuth = {};
       for (const s of stems) this.azimuth[s] = geometry[s].azimuth;
     }
@@ -115,6 +117,10 @@
     _buildStem(stem) {
       const ctx = this.ctx;
       const n = { input: ctx.createGain(), split: ctx.createChannelSplitter(2), out: ctx.createGain(), chains: [] };
+      // Live input (setLive) joins the stem's file audio here: this gain node is summed into n.input.
+      n.liveGain = ctx.createGain(); n.liveGain.gain.value = 0;
+      n.liveGain.channelCount = 2; n.liveGain.channelCountMode = 'explicit';
+      n.liveGain.connect(n.input);
       n.input.channelCount = 2; n.input.channelCountMode = 'explicit';
       n.input.connect(n.split);
       // Level: BRANCH_GAIN * volume * (muted ? 0 : 1), ramped like Pd's line~ 20 ms.
@@ -265,7 +271,7 @@
     // as env~ reports it: dB with 100 = full scale, 0 for silence.
     envDb(stem) {
       const n = this.nodes[stem];
-      if (!n || !this.playing) return 0;
+      if (!n || !(this.playing || this.live[stem])) return 0;
       if (!this._meterBuf) this._meterBuf = new Float32Array(n.analyser.fftSize);
       n.analyser.getFloatTimeDomainData(this._meterBuf);
       // The analyser window is oldest-first; the newest 512 samples are the tail.
@@ -440,6 +446,86 @@
       }
       entry.progress = 100;
       this._changed();
+    }
+
+    /* ---------------- live input ---------------- */
+
+    // A sound input (microphone, line-in, a virtual cable, a USB interface) added to a stem, on top of
+    // whatever the stem's file plays - the web app's version of the rig's EXT option (address 100+i).
+    // deviceId '' is the browser's default input; pair 0 switches it off, 1..4 = the device's channels
+    // 1-2 ... 7-8 (a mono device feeds both sides). Echo cancellation, noise suppression and automatic
+    // gain are off: they are made for calls and would mangle music. Needs a tap/click (permission).
+    // Resolves with { channels } of the device, or throws (permission refused, no such device).
+    async setLive(stem, { deviceId = '', pair = 0, gain = 1 } = {}) {
+      await this.ensure();
+      const n = this.nodes[stem];
+      if (!n) throw new Error('no such stem: ' + stem);
+      const old = this.live[stem];
+      if (old && old.merger) { try { old.merger.disconnect(); } catch (e) {} }
+      if (!pair) {
+        n.liveGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.01);
+        delete this.live[stem];
+        this._releaseInput(old && old.deviceId);
+        this._changed();
+        return { channels: 0 };
+      }
+      const input = await this._openInput(deviceId);
+      const merger = this.ctx.createChannelMerger(2);
+      const left = 2 * (pair - 1), right = left + 1;
+      const have = input.channels;
+      const l = left < have ? left : 0;                     // a pair the device does not have: its first channel
+      const r = right < have ? right : (left < have ? left : 0);   // a mono device (or odd count) feeds both sides
+      input.splitter.connect(merger, l, 0);
+      input.splitter.connect(merger, r, 1);
+      merger.connect(n.liveGain);
+      n.liveGain.gain.setTargetAtTime(Math.max(0, Math.min(2, gain)), this.ctx.currentTime, 0.01);
+      this.live[stem] = { deviceId, pair, gain, merger };
+      if (old && old.deviceId !== deviceId) this._releaseInput(old.deviceId);
+      this._changed();
+      return { channels: have };
+    }
+
+    setLiveGain(stem, gain) {
+      const l = this.live[stem];
+      if (!l) return;
+      l.gain = gain;
+      this.nodes[stem].liveGain.gain.setTargetAtTime(Math.max(0, Math.min(2, gain)), this.ctx.currentTime, 0.01);
+    }
+
+    async _openInput(deviceId) {
+      let e = this.inputs.get(deviceId);
+      if (e && e.stream.getAudioTracks().some((t) => t.readyState === 'live')) return e;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('this browser cannot open audio inputs here (it needs https:// or localhost)');
+      const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 8 } };
+      if (deviceId) audio.deviceId = { exact: deviceId };
+      const stream = await navigator.mediaDevices.getUserMedia({ audio });
+      const track = stream.getAudioTracks()[0];
+      const channels = Math.max(1, (track && track.getSettings().channelCount) || 2);
+      const source = this.ctx.createMediaStreamSource(stream);
+      const splitter = this.ctx.createChannelSplitter(Math.max(2, Math.min(32, channels)));
+      source.connect(splitter);
+      e = { stream, source, splitter, channels };
+      this.inputs.set(deviceId, e);
+      return e;
+    }
+
+    // Close a device once no stem uses it any more.
+    _releaseInput(deviceId) {
+      if (deviceId === undefined || deviceId === null) return;
+      if (Object.values(this.live).some((l) => l.deviceId === deviceId)) return;
+      const e = this.inputs.get(deviceId);
+      if (!e) return;
+      try { e.source.disconnect(); } catch (err) {}
+      e.stream.getTracks().forEach((t) => t.stop());
+      this.inputs.delete(deviceId);
+    }
+
+    // The audio inputs the browser can see: [{ deviceId, label }]. Labels are empty until the page
+    // has been given permission once (a call to setLive).
+    async inputDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
+      const all = await navigator.mediaDevices.enumerateDevices();
+      return all.filter((d) => d.kind === 'audioinput').map((d, i) => ({ deviceId: d.deviceId, label: d.label || ('Input ' + (i + 1)) }));
     }
 
     /* ---------------- transport ---------------- */

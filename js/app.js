@@ -11,8 +11,12 @@
 //     each armed stem's phone offset (the bridge's phoneRotate).
 //   - Stem setups: numbered presets plus setups attached to songs; a song
 //     loads its own setup, or preset 0 (js/setups.js, the bridge's model).
-const { STEMS: ALL_STEMS, DRUM_PARTS, GEOMETRY, COLOR: STEM_COLOR, ICONS, LEFTOVER } = SSStems;
+const { STEMS: ALL_STEMS, DRUM_PARTS, INPUT_STEMS, GEOMETRY, COLOR: STEM_COLOR, ICONS, LEFTOVER } = SSStems;
 const IS_PART = new Set(DRUM_PARTS);
+// The input stems have no file: they play a sound input (the EXT option, engine.setLive) and stay out
+// of the window until added with "+ Add stem". Every stem can take a sound input too.
+const IS_INPUT = new Set(INPUT_STEMS);
+const stemTitle = (s) => (IS_INPUT.has(s) ? 'INPUT ' + s.slice(5) : s.toUpperCase());
 
 const $ = (id) => document.getElementById(id);
 const status = $('status'), val = $('val'), stemLabel = $('stemLabel');
@@ -50,7 +54,7 @@ let loading = null;      // { song, pct, autoplay } while one is decoding
 let seeking = false, seekDirty = false;
 const spatial = {};
 for (const s of ALL_STEMS) spatial[s] = motion.stems[s].params;
-let activeSpatialStem = null, activeLedStem = null;
+let activeSpatialStem = null, activeLedStem = null, activeExtStem = null;
 let lastSliderValue = 0;
 let dragging = null;
 const cards = {};
@@ -76,6 +80,7 @@ startBtn.addEventListener('click', async () => {
   } catch (e) { alert('Could not start audio: ' + e.message); return; }
   motion.start();
   applyOutputPrefs();
+  restoreLiveInputs();
   startOverlay.hidden = true;
   status.classList.add('connected');
   refreshStatus();
@@ -102,7 +107,7 @@ function buildCards() {
     card.innerHTML =
       '<div class="card-head">' +
         '<svg viewBox="0 0 24 24" stroke="' + c + '">' + ICONS[stem] + '</svg>' +
-        '<span class="stem-name">' + stem.toUpperCase() + '</span>' +
+        '<span class="stem-name">' + stemTitle(stem) + '</span>' +
         '<span class="stem-note"></span>' +
       '</div>' +
       '<div class="level"><div class="level-fill"></div></div>' +
@@ -136,6 +141,7 @@ function buildCards() {
       '</div>' +
       '<div class="card-row2">' +
         '<button class="tog-btn led-btn" hidden><span class="swatch"></span>LED</button>' +
+        '<button class="tog-btn ext-btn" title="External input: sound from a mic or line-in into this stem">EXT</button>' +
       '</div>';
     stemGrid.appendChild(card);
     cards[stem] = {
@@ -153,6 +159,7 @@ function buildCards() {
       cam: card.querySelector('.cam-btn'),
       spatial: card.querySelector('.spatial-btn'),
       led: card.querySelector('.led-btn'),
+      ext: card.querySelector('.ext-btn'),
       level: card.querySelector('.level-fill'),
       note: card.querySelector('.stem-note'),
     };
@@ -175,6 +182,7 @@ function buildCards() {
       if (!draggingFiles(ev)) return;
       ev.preventDefault(); ev.stopPropagation();
       dragDepth = 0; dropZone.classList.remove('over');
+      if (IS_INPUT.has(stem)) { toast(stemTitle(stem) + ' plays a sound input, not a file.'); return; }
       dropOnStem(stem, [...ev.dataTransfer.files].find((f) => /\.(wav|wave|flac|mp3|m4a|aac|mp4|ogg|oga|opus|webm|aif|aiff|caf)$/i.test(f.name) || (f.type || '').startsWith('audio/')));
     });
     card.addEventListener('click', (ev) => {   // anywhere on the card but its controls
@@ -182,6 +190,7 @@ function buildCards() {
       if (activeSpatialStem !== stem) openSpatialPanel(stem);
     });
     cards[stem].led.addEventListener('click', () => openLedPanel(stem));
+    cards[stem].ext.addEventListener('click', () => openExtPanel(stem));
     bindKnob(card.querySelector('.knob'), stem);
     bindFader(card.querySelector('.fader'), stem);
   }
@@ -193,11 +202,12 @@ function buildCards() {
 const songHasParts = () => DRUM_PARTS.some((p) => engine.hasStem(p));
 // A stem the loaded song has no audio for (with no song loaded: the drum parts) is
 // collapsed to its heading and left off the radar and the hands.
-const stemAbsent = (stem) => engine.song ? stemNote(stem) === 'silent' : IS_PART.has(stem);
+const stemAbsent = (stem) => IS_INPUT.has(stem) ? !inputAdded[stem] : engine.song ? stemNote(stem) === 'silent' : IS_PART.has(stem);
 const stemShown = (stem) => !stemAbsent(stem);
 
 // Why a stem has no sound right now, or '' if it has.
 function stemNote(stem) {
+  if (IS_INPUT.has(stem)) return '';   // plays a sound input, not the song
   if (!engine.song) return '';
   if (stem === 'drums' && songHasParts()) return 'rest';
   if (!engine.hasStem(stem)) return 'silent';
@@ -235,6 +245,12 @@ function refreshCards() {
   for (const stem of ALL_STEMS) {
     const k = cards[stem];
     if (!k) continue;
+    k.card.hidden = IS_INPUT.has(stem) && !inputAdded[stem];
+    const liveOn = !!engine.live[stem];
+    k.ext.classList.toggle('on', liveOn);
+    k.ext.classList.toggle('open', stem === activeExtStem);
+    k.ext.title = liveOn ? 'External input on: ' + (liveSettings[stem].label || 'default input') + ', channels ' + (2 * liveSettings[stem].pair - 1) + '-' + (2 * liveSettings[stem].pair)
+                         : 'External input: sound from a mic or line-in into this stem (off)';
     const armed = selectedStems.has(stem);
     k.sel.setAttribute('opacity', armed ? 1 : 0.12);
     k.arm.classList.toggle('armed', armed);
@@ -453,6 +469,7 @@ const beatSenseRow = $('beatSenseRow'), beatSenseBlock = $('beatSenseBlock'), be
 const beatNudgeEl = $('beatNudge'), beatNudgeOutEl = $('beatNudgeOut'), beatsHintEl = $('beatsHint');
 // One button per stem, then the whole mix (value = number of stems).
 [...ALL_STEMS, null].forEach((s, i) => {
+  if (s && IS_INPUT.has(s)) return;   // a live input has no beats analysed offline
   const btn = document.createElement('button');
   btn.className = 'seg-btn';
   btn.dataset.value = i;
@@ -618,7 +635,8 @@ function openSpatialPanel(stem) {
   spatialPanel.hidden = activeSpatialStem === null;
   if (activeSpatialStem) {
     if (activeLedStem) openLedPanel(activeLedStem);   // one panel at a time
-    spatialStemName.textContent = stem.toUpperCase();
+    if (activeExtStem) openExtPanel(activeExtStem);
+    spatialStemName.textContent = stemTitle(stem);
     spatialStemName.style.color = STEM_COLOR[stem];
     refreshSpatialPanel();
   }
@@ -631,7 +649,7 @@ $('spatialCloseBtn').addEventListener('click', () => { if (activeSpatialStem) op
 // narrower desktop, a bottom sheet on a phone) so they open beside the cards
 // instead of under all of them.
 function syncSideCol() {
-  const open = activeSpatialStem !== null || activeLedStem !== null;
+  const open = activeSpatialStem !== null || activeLedStem !== null || activeExtStem !== null;
   $('sideCol').hidden = !open;
   $('app').classList.toggle('has-side', open);
   if (typeof railSync === 'function') railSync();
@@ -1193,7 +1211,7 @@ function renderSongs() {
     const slots = document.createElement('span');
     slots.className = 'stem-slots';
     ALL_STEMS.forEach((s, k) => {
-      if (IS_PART.has(s)) return;   // the KIT tag stands for all six
+      if (IS_PART.has(s) || IS_INPUT.has(s)) return;   // the KIT tag stands for all six; inputs are not in a song
       const dot = document.createElement('i');
       dot.style.background = STEM_COLOR[s];
       if (song.slots[k]) dot.classList.add('on');
@@ -2027,7 +2045,7 @@ led.getState = () => {
   const azimuth = {}, gain = {};
   for (const s of ALL_STEMS) {
     azimuth[s] = motion.stems[s].effective;
-    gain[s] = engine.song && engine.hasStem(s) && !mutedStems.has(s) ? volume[s] : 0;
+    gain[s] = ((engine.song && engine.hasStem(s)) || engine.live[s]) && !mutedStems.has(s) ? volume[s] : 0;
   }
   return { azimuth, gain, mirror: engine.lrSwap };
 };
@@ -2113,6 +2131,133 @@ bindSegRow($('ledRunRow'), (v) => {
 });
 ledSetup.addEventListener('toggle', () => { if (ledSetup.open && !SSHelper.info && SSHelper.seen) checkHelper(); });
 
+/* ---------------- external input (EXT) and added stems ---------------- */
+
+// Per stem: which sound input, which of its channel pairs, how loud. Saved in this browser (not in a
+// setup: it belongs to this computer's hardware). The input stems are shown once added.
+const liveSettings = {};
+for (const s of ALL_STEMS) liveSettings[s] = { deviceId: '', label: '', pair: 0, gain: 1 };
+const inputAdded = {};
+{
+  const saved = pref('live', {}), added = pref('inputsAdded', {});
+  for (const s of ALL_STEMS) if (saved[s]) Object.assign(liveSettings[s], saved[s]);
+  for (const s of INPUT_STEMS) inputAdded[s] = !!added[s];
+}
+const saveLive = () => { setPref('live', liveSettings); setPref('inputsAdded', inputAdded); };
+
+const extPanel = $('extPanel'), extPairRow = $('extPairRow'), extGainEl = $('extGain'), extDeviceEl = $('extDevice'), extHint = $('extHint');
+const addStemBtn = $('addStemBtn');
+let extGainTouched = 0;
+
+// Turn a saved choice into a running input (needs the tap that started audio, or any other tap).
+async function applyLive(stem, quiet) {
+  const l = liveSettings[stem];
+  try {
+    const r = await engine.setLive(stem, { deviceId: l.deviceId, pair: l.pair, gain: l.gain });
+    if (l.pair && r.channels && 2 * (l.pair - 1) >= r.channels) toast(stemTitle(stem) + ': that device has only ' + r.channels + ' channel' + (r.channels > 1 ? 's' : '') + ' - using the first.', 4200);
+    return true;
+  } catch (e) {
+    l.pair = 0;
+    saveLive();
+    if (!quiet) toast('Could not open the input: ' + (e.message || e.name), 5000);
+    return false;
+  } finally { refreshCards(); refreshExtPanel(); }
+}
+async function restoreLiveInputs() {
+  for (const s of ALL_STEMS) if (liveSettings[s].pair) await applyLive(s, true);
+}
+
+async function fillDevices() {
+  const list = await engine.inputDevices().catch(() => []);
+  const cur = activeExtStem ? liveSettings[activeExtStem].deviceId : '';
+  extDeviceEl.textContent = '';
+  const def = document.createElement('option');
+  def.value = ''; def.textContent = 'Default input';
+  extDeviceEl.appendChild(def);
+  for (const d of list) {
+    if (!d.deviceId || d.deviceId === 'default') continue;
+    const o = document.createElement('option');
+    o.value = d.deviceId; o.textContent = d.label;
+    extDeviceEl.appendChild(o);
+  }
+  extDeviceEl.value = [...extDeviceEl.options].some((o) => o.value === cur) ? cur : '';
+}
+
+function openExtPanel(stem) {
+  activeExtStem = (activeExtStem === stem) ? null : stem;
+  if (activeExtStem) {
+    if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
+    if (activeLedStem) openLedPanel(activeLedStem);
+    $('extStemName').textContent = stemTitle(stem);
+    $('extStemName').style.color = STEM_COLOR[stem];
+    fillDevices();
+  }
+  extPanel.hidden = activeExtStem === null;
+  refreshExtPanel();
+  syncSideCol();
+  refreshCards();
+}
+function refreshExtPanel() {
+  if (!activeExtStem) return;
+  const l = liveSettings[activeExtStem];
+  setSegActive(extPairRow, l.pair);
+  if (Date.now() - extGainTouched > 1000) extGainEl.value = l.gain;
+  $('extGainOut').textContent = Math.round(l.gain * 100) + '%';
+  if ([...extDeviceEl.options].some((o) => o.value === l.deviceId)) extDeviceEl.value = l.deviceId;
+  $('extRemoveBlock').hidden = !IS_INPUT.has(activeExtStem);
+  const e = engine.live[activeExtStem];
+  extHint.textContent = !navigator.mediaDevices ? 'This browser cannot open audio inputs here: it needs an https:// page (or localhost).'
+    : e ? 'On. If it sounds doubled or echoes, use headphones.' : l.pair ? 'Starting...' : 'Off - pick the channels of the input to use.';
+}
+bindSegRow(extPairRow, async (v) => {
+  if (!activeExtStem) return;
+  const l = liveSettings[activeExtStem];
+  l.pair = v;
+  l.label = extDeviceEl.selectedOptions[0] ? extDeviceEl.selectedOptions[0].textContent : '';
+  saveLive(); refreshExtPanel();
+  await applyLive(activeExtStem);
+  if (v) fillDevices();   // device names appear once permission is given
+  buzz(15);
+});
+extDeviceEl.addEventListener('change', async () => {
+  if (!activeExtStem) return;
+  const l = liveSettings[activeExtStem];
+  l.deviceId = extDeviceEl.value;
+  l.label = extDeviceEl.selectedOptions[0].textContent;
+  saveLive();
+  if (l.pair) await applyLive(activeExtStem);
+});
+extGainEl.addEventListener('input', () => {
+  extGainTouched = Date.now();
+  if (!activeExtStem) return;
+  liveSettings[activeExtStem].gain = Number(extGainEl.value);
+  engine.setLiveGain(activeExtStem, liveSettings[activeExtStem].gain);
+  saveLive(); refreshExtPanel();
+});
+$('extCloseBtn').addEventListener('click', () => { if (activeExtStem) openExtPanel(activeExtStem); });
+$('extRemoveBtn').addEventListener('click', async () => {
+  const stem = activeExtStem;
+  if (!stem) return;
+  openExtPanel(stem);
+  liveSettings[stem].pair = 0;
+  inputAdded[stem] = false;
+  saveLive();
+  await engine.setLive(stem, { pair: 0 }).catch(() => {});
+  refreshAddStem(); refreshCards(); requestRadar(); updateStemLabel();
+});
+function refreshAddStem() { addStemBtn.hidden = !INPUT_STEMS.some((s) => !inputAdded[s]); }
+addStemBtn.addEventListener('click', () => {
+  const stem = INPUT_STEMS.find((s) => !inputAdded[s]);
+  if (!stem) return;
+  inputAdded[stem] = true;
+  if (!liveSettings[stem].pair) liveSettings[stem].pair = 0;
+  saveLive();
+  refreshAddStem(); refreshCards(); requestRadar(); updateStemLabel();
+  openExtPanel(stem);
+  buzz(15);
+});
+refreshAddStem();
+
 // Per-stem LED look: one shared panel, like the rig's.
 const ledPanel = $('ledPanel'), ledColorEl = $('ledColor'), ledSpreadEl = $('ledSpread'), ledTailEl = $('ledTail');
 function openLedPanel(stem) {
@@ -2120,7 +2265,8 @@ function openLedPanel(stem) {
   ledPanel.hidden = activeLedStem === null;
   if (activeLedStem) {
     if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
-    $('ledStemName').textContent = stem.toUpperCase();
+    if (activeExtStem) openExtPanel(activeExtStem);
+    $('ledStemName').textContent = stemTitle(stem);
     refreshLedPanel();
   }
   syncSideCol();
@@ -2685,9 +2831,9 @@ if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); 
     try { localStorage.setItem(KEY, JSON.stringify([...shown])); } catch (e) {}
     apply();
   }
-  function sideOpen() { return activeSpatialStem !== null || activeLedStem !== null; }
+  function sideOpen() { return activeSpatialStem !== null || activeLedStem !== null || activeExtStem !== null; }
   function toggleSide() {
-    if (sideOpen()) { if (activeSpatialStem) openSpatialPanel(activeSpatialStem); if (activeLedStem) openLedPanel(activeLedStem); }
+    if (sideOpen()) { if (activeSpatialStem) openSpatialPanel(activeSpatialStem); if (activeLedStem) openLedPanel(activeLedStem); if (activeExtStem) openExtPanel(activeExtStem); }
     else openSpatialPanel(lastStem || ALL_STEMS[0]);
   }
   function apply() {

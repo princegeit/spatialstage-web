@@ -67,6 +67,8 @@
       // Beat steps settings, kept only when valid (the same checks as the bridge's BEAT_PARAMS).
       const pick = (k, ok) => { const v = Math.round(num(sp[k], d[k])); if (ok(v)) d[k] = v; };
       pick('beatSrc', (v) => v >= 0 && v <= S.STEMS.length);
+      // Before the live-input stems there were twelve stems, and 12 meant the whole mix.
+      if (d.beatSrc === S.STEMS.length - S.INPUT_STEMS.length) d.beatSrc = S.STEMS.length;
       pick('beatEvery', (v) => [1, 2, 4, 8].includes(v));
       pick('beatSteps', (v) => [2, 3, 4, 6, 8].includes(v));
       pick('beatPattern', (v) => [0, 1, 2, 3].includes(v));
