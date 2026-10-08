@@ -716,6 +716,7 @@ function refreshSpatialPanel() {
   $('spatialBaseOut').textContent = pos + '°';
   smoothingSliderEl.value = st.smoothing; $('smoothingOut').textContent = st.smoothing.toFixed(2);
   refreshTempoHint();
+  refreshEventRows();
 }
 
 // Under the tempo row: what the Tempo-Sync motion is actually following.
@@ -733,6 +734,81 @@ function refreshTempoHint() {
   }
   if (tempoHint.textContent !== t) tempoHint.textContent = t;
   tempoHint.hidden = !t;
+}
+
+/* ---------------- sound events (js/events.js) ---------------- */
+
+// The Sound events section of the spatial menu. Same controls, same values as the rig page's;
+// the layer itself runs in motion.js (StemMotion._events).
+const evOnRow = $('evOnRow'), evTypesRow = $('evTypesRow'), evModeRow = $('evModeRow'), evAimRow = $('evAimRow');
+const evCurveRow = $('evCurveRow'), evCuesRow = $('evCuesRow'), evTestRow = $('evTestRow');
+const evSenseEl = $('evSense'), evSpeedEl = $('evSpeed'), evRoomEl = $('evRoom');
+const EV_MODE_HINT = [
+  'Override: the event takes the stem over for its path, then glides it back to where it was.',
+  'Offset: the path is drawn around wherever the stem already is, on top of its phone, camera or preset motion.',
+  'Modulate: the stem keeps its direction; the event speeds up its preset motion (turn Preset motion on to hear it) and moves it nearer or further.',
+];
+function setBitsActive(row, mask) {
+  row.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', (mask & Number(b.dataset.value)) !== 0));
+}
+const evSet = (param) => (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, v); refreshEventRows(); } };
+const evToggleBit = (param) => (bit) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, spatial[activeSpatialStem][param] ^ bit); refreshEventRows(); } };
+bindSegRow(evOnRow, evSet('evOn'));
+bindSegRow(evModeRow, evSet('evMode'));
+bindSegRow(evAimRow, evSet('evAim'));
+bindSegRow(evCurveRow, evSet('evCurve'));
+bindSegRow(evTypesRow, evToggleBit('evTypes'));
+bindSegRow(evCuesRow, evToggleBit('evCues'));
+bindSegRow(evTestRow, (type) => { if (activeSpatialStem) { motion.fireEvent(activeSpatialStem, type); buzz(15); } });
+for (const [el, param, fmt] of [[evSenseEl, 'evSense', (v) => Math.round(v * 100) + '%'], [evSpeedEl, 'evSpeed', (v) => v.toFixed(2) + '×'], [evRoomEl, 'evRoom', (v) => v + ' m']]) {
+  el.addEventListener('input', () => {
+    if (!activeSpatialStem) return;
+    const v = Number(el.value);
+    sendSpatial(activeSpatialStem, param, v);
+    $(param + 'Out').textContent = fmt(v);
+    if (param === 'evRoom') refreshEventRows();
+  });
+}
+function evCuesHintText(st) {
+  if (!(st.evCues & SSEvents.CUE_BIT.doppler)) return '';
+  const rest = SSEvents.cues(1, st).delayMs;
+  return 'Doppler plays this stem about ' + rest.toFixed(0) + ' ms late even at rest (the room size sets how much a fly-by bends).';
+}
+function refreshEventRows() {
+  if (!activeSpatialStem) return;
+  const st = spatial[activeSpatialStem];
+  setSegActive(evOnRow, st.evOn);
+  setBitsActive(evTypesRow, st.evTypes);
+  setSegActive(evModeRow, st.evMode);
+  setSegActive(evAimRow, st.evAim);
+  setSegActive(evCurveRow, st.evCurve);
+  setBitsActive(evCuesRow, st.evCues);
+  $('evModeHint').textContent = EV_MODE_HINT[st.evMode];
+  $('evRoomRow').hidden = !(st.evCues & SSEvents.CUE_BIT.doppler);
+  $('evCuesHint').textContent = evCuesHintText(st);
+  $('evCuesHint').hidden = !$('evCuesHint').textContent;
+  if (document.activeElement !== evSenseEl) evSenseEl.value = st.evSense;
+  if (document.activeElement !== evSpeedEl) evSpeedEl.value = st.evSpeed;
+  if (document.activeElement !== evRoomEl) evRoomEl.value = st.evRoom;
+  $('evSenseOut').textContent = Math.round(st.evSense * 100) + '%';
+  $('evSpeedOut').textContent = st.evSpeed.toFixed(2) + '×';
+  $('evRoomOut').textContent = st.evRoom + ' m';
+  refreshEventNow();
+}
+// The live line under Listen: what the detector hears (level, air) and what it is doing.
+function refreshEventNow() {
+  if (!activeSpatialStem) return;
+  const st = spatial[activeSpatialStem], m = motion.stems[activeSpatialStem], L = m.events, ev = m.ev;
+  const listening = st.evOn === 1;
+  const level = listening ? Math.max(0, Math.min(1, (L.level - 40) / 60)) : 0;
+  const air = listening && L.level > SSEvents.GATE ? Math.max(0, Math.min(1, (L.bright + 40) / 40)) : 0;
+  $('evLevelBar').style.width = Math.round(level * 100) + '%';
+  $('evAirBar').style.width = Math.round(air * 100) + '%';
+  const tag = $('evTag');
+  const label = ev && ev.label;
+  tag.textContent = label || (listening ? (m.armed ? 'listening' : 'not armed') : 'off');
+  tag.classList.toggle('live', !!label);
+  tag.classList.toggle('flash', !!(ev && ev.flash));
 }
 
 /* ---------------- stem setups: presets + song-attached (js/setups.js) ---------------- */
@@ -1064,8 +1140,25 @@ function drawRadar() {
       stemLayer.appendChild(svgEl('circle', { class: 'sel-ring', cx: dx, cy: dy, r: 11, stroke: colour }));
     }
     labelItems.push({ stem, a });
+    drawEventGhost(stem, a, colour);
   }
   drawLabels(labelItems);
+}
+
+// A sound event in progress: a dashed ring where the stem is heard from (its distance as the
+// radius - 1 = the ring), tied to the dot, with what the event is. The rig page draws the same.
+function drawEventGhost(stem, a, colour) {
+  const ev = motion.stems[stem].ev;
+  if (!ev || ev.w < 0.03) return;
+  const r = RING * Math.max(0.3, Math.min(1.55, ev.dist));
+  const [gx, gy] = polar(a, r), [dx, dy] = polar(a, RING);
+  if (Math.abs(r - RING) > 3) stemLayer.appendChild(svgEl('line', { class: 'ev-ghost-line', x1: dx, y1: dy, x2: gx, y2: gy, stroke: colour }));
+  stemLayer.appendChild(svgEl('circle', { class: 'ev-ghost', cx: gx, cy: gy, r: ev.flash ? 13 : 9, stroke: colour, opacity: 0.4 + 0.6 * ev.w }));
+  if (ev.label) {
+    const t = svgEl('text', { class: 'ev-ghost-tag', x: gx, y: gy - 14, 'text-anchor': 'middle', fill: colour });
+    t.textContent = ev.label.toUpperCase();
+    stemLayer.appendChild(t);
+  }
 }
 
 // Drag a dot to place that stem. With a mouse, dragging empty space inside
@@ -1130,7 +1223,7 @@ radar.addEventListener('touchstart', (ev) => {
 // while the panel shows them.
 let tickN = 0;
 motion.onTick = () => {
-  if ((++tickN & 1) === 0) requestRadar();
+  if ((++tickN & 1) === 0) { requestRadar(); if (activeSpatialStem) refreshEventNow(); }
   if (tickN % 20 === 0 && activeSpatialStem) {
     const st = spatial[activeSpatialStem];
     if (st.tempoSource === 1) refreshTempoHint();

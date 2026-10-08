@@ -6,7 +6,8 @@
 //   { name, spatial: { <stem>: { fftMode, presetMode, presetRate, blendMode,
 //       blendWeights2, blendWeights3, tempoSource, tempoBpm, base, fftSrc,
 //       smoothing, smoothingMode, beatSrc, beatEvery, beatSteps, beatPattern,
-//       beatNudge, beatFollow, beatSense } },
+//       beatNudge, beatFollow, beatSense, evOn, evTypes, evMode, evAim, evCurve,
+//       evSpeed, evSense, evCues, evRoom } },
 //     stems: { <stem>: { volume, muted, armed } } }
 // `base` is where the stem sits, as an offset from its layout azimuth
 // (SSStems.GEOMETRY / the Pd patch's creation arguments).
@@ -21,6 +22,7 @@
 (function () {
   'use strict';
   const S = (typeof SSStems !== 'undefined') ? SSStems : require('./stems.js');
+  const EV = (typeof SSEvents !== 'undefined') ? SSEvents : require('./events.js');
   const KEY = 'spatialstage.setups.v2';
   const LEGACY_KEY = 'spatialstage.presets.v1';
   const FORMAT = 'spatialstage-setups';
@@ -35,6 +37,7 @@
       tempoSource: 0, tempoBpm: 120, base: 0, fftSrc: S.STEMS.indexOf(stem), smoothing: 1,
       smoothingMode: 0,
       beatSrc: S.STEMS.length, beatEvery: 1, beatSteps: 4, beatPattern: 0, beatNudge: 0, beatFollow: 0, beatSense: 1,
+      ...EV.DEFAULTS,   // sound events (js/events.js)
     };
   }
 
@@ -75,6 +78,7 @@
       pick('beatFollow', (v) => v === 0 || v === 1);
       pick('beatSense', (v) => [0, 1, 2].includes(v));
       d.beatNudge = Math.max(-200, Math.min(200, num(sp.beatNudge, d.beatNudge)));
+      Object.assign(d, EV.normalise(sp));   // sound events: valid values kept, the rest default
       if (Array.isArray(sp.blendWeights2) && sp.blendWeights2.length === 2) d.blendWeights2 = sp.blendWeights2.map((v) => num(v, 0));
       if (Array.isArray(sp.blendWeights3) && sp.blendWeights3.length === 3) {
         const raw = sp.blendWeights3.map((v) => num(v, 0));

@@ -123,7 +123,15 @@
       n.liveGain.channelCount = 2; n.liveGain.channelCountMode = 'explicit';
       n.liveGain.connect(n.input);
       n.input.channelCount = 2; n.input.channelCountMode = 'explicit';
-      n.input.connect(n.split);
+      // Distance stage (sound events, js/events.js): Doppler delay -> low-pass -> gain, before the
+      // panners so every output (classic, HRTF, quad) hears it - the Pd rig's spatial/dist-cue. At
+      // rest it is no delay, 20 kHz and unity. The analysis taps below stay before it, so a stem
+      // that an event pushes away does not then measure itself as quieter.
+      n.dop = ctx.createDelay(0.5); n.dop.delayTime.value = 0;
+      n.distLp = ctx.createBiquadFilter(); n.distLp.type = 'lowpass'; n.distLp.frequency.value = 20000; n.distLp.Q.value = 0.707;
+      n.distGain = ctx.createGain(); n.distGain.gain.value = 1;
+      n.input.connect(n.dop); n.dop.connect(n.distLp); n.distLp.connect(n.distGain); n.distGain.connect(n.split);
+      n.dist = { gain: 1, cutoff: 20000, delayMs: 0 };
       // Level: BRANCH_GAIN * volume * (muted ? 0 : 1), ramped like Pd's line~ 20 ms.
       n.out.gain.value = BRANCH_GAIN;
       n.out.connect(this.master);
@@ -145,6 +153,14 @@
       n.bp = ctx.createBiquadFilter(); n.bp.type = 'bandpass'; n.bp.frequency.value = 1000; n.bp.Q.value = 4;
       n.bandAnalyser = ctx.createAnalyser(); n.bandAnalyser.fftSize = 1024; n.bandAnalyser.smoothingTimeConstant = 0;
       n.mono.connect(n.bp); n.bp.connect(n.bandAnalyser);
+      // Sound events (js/events.js) read three levels per stem: the mono mix and the same through a
+      // 3 kHz high-pass and a 200 Hz low-pass - the Pd rig's [hip~ 3000]x2 / [lop~ 200]x2 -> env~.
+      n.hiF = ctx.createBiquadFilter(); n.hiF.type = 'highpass'; n.hiF.frequency.value = 3000;
+      n.loF = ctx.createBiquadFilter(); n.loF.type = 'lowpass'; n.loF.frequency.value = 200;
+      n.hiAnalyser = ctx.createAnalyser(); n.hiAnalyser.fftSize = 2048; n.hiAnalyser.smoothingTimeConstant = 0;
+      n.loAnalyser = ctx.createAnalyser(); n.loAnalyser.fftSize = 2048; n.loAnalyser.smoothingTimeConstant = 0;
+      n.mono.connect(n.hiF); n.hiF.connect(n.hiAnalyser);
+      n.mono.connect(n.loF); n.loF.connect(n.loAnalyser);
 
       const merger = ctx.createChannelMerger(2);
       merger.connect(n.out);
@@ -280,6 +296,34 @@
       let e = 0;
       for (let i = from; i < b.length; i++) e += b[i] * b[i];
       return Math.max(0, 100 + 20 * Math.log10(Math.sqrt(e / 512) + 1e-9));
+    }
+
+    // The three readings the sound-event detector uses, env~ dB over the newest 2048 samples (about
+    // the rig's env~ 4096 window with its half-window hop): { level, hi, lo }, or null when silent
+    // (stopped, nothing live).
+    featuresOf(stem) {
+      const n = this.nodes[stem];
+      if (!n || !(this.playing || this.live[stem])) return null;
+      if (!this._featBuf) this._featBuf = new Float32Array(2048);
+      const b = this._featBuf;
+      const db = (an) => {
+        an.getFloatTimeDomainData(b);
+        let e = 0;
+        for (let i = 0; i < b.length; i++) e += b[i] * b[i];
+        return Math.max(0, 100 + 20 * Math.log10(Math.sqrt(e / b.length) + 1e-9));
+      };
+      return { level: db(n.analyser), hi: db(n.hiAnalyser), lo: db(n.loAnalyser) };
+    }
+
+    // Distance cues from js/events.js: { gain, cutoff (Hz), delayMs }. Glided (Doppler a little
+    // slower, so a changing distance bends the pitch instead of stepping it).
+    setDistance(stem, cue) {
+      const n = this.nodes[stem];
+      if (!n || !this.ctx) return;
+      const d = n.dist, t = this.ctx.currentTime;
+      if (Math.abs(cue.gain - d.gain) > 0.002) { n.distGain.gain.setTargetAtTime(cue.gain, t, 0.03); d.gain = cue.gain; }
+      if (Math.abs(cue.cutoff - d.cutoff) > 5) { n.distLp.frequency.setTargetAtTime(cue.cutoff, t, 0.03); d.cutoff = cue.cutoff; }
+      if (Math.abs(cue.delayMs - d.delayMs) > 0.01) { n.dop.delayTime.setTargetAtTime(Math.min(480, cue.delayMs) / 1000, t, 0.05); d.delayMs = cue.delayMs; }
     }
 
     // 0..1 meter value for the UI: envDb on a -60..0 dB scale, times the

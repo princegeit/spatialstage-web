@@ -145,6 +145,11 @@
         // Beat steps; beatSrc = stemCount is the whole mix. Same fields as the rig.
         beatSrc: stemCount, beatEvery: 1, beatSteps: 4, beatPattern: 0, beatNudge: 0, beatFollow: 0, beatSense: 1,
       };
+      // Sound events (js/events.js): evOn, evTypes, evMode, evAim, evCurve, evSpeed, evSense, evCues, evRoom.
+      Object.assign(this.params, SSEvents.DEFAULTS);
+      this.events = new SSEvents.EventLayer(index);
+      this.ev = null;          // the layer's last output while it is doing anything, for the UI
+      this.evRate = 1;         // Modulate: how much faster the preset motion runs right now
       this.stemCount = stemCount;
       this.smoothingNow = 1;   // the k actually in use, for the panel's hint
       this.phone = 0;          // degrees, relative to the stem's base (the UI's "rotate")
@@ -164,6 +169,13 @@
 
     set(param, value) {
       if (BEAT_PARAMS[param] && !BEAT_PARAMS[param](value, this.stemCount)) return;
+      if (SSEvents.PARAMS[param]) {
+        const v = SSEvents.clean(param, value);
+        if (v === undefined) return;
+        this.params[param] = v;
+        if (param === 'evOn' && v === 0) this.events.det.reset();
+        return;
+      }
       if (Array.isArray(value)) this.params[param] = value.slice();
       else this.params[param] = value;
       if (param === 'smoothing' || param === 'smoothingMode') {
@@ -203,7 +215,7 @@
       // source 2 (Link) is a stub on both rigs: falls back to manual.
 
       // --- preset-source ---
-      const rate = p.presetMode >= 1.5 ? (bpm / 60) / this.presetBeats : p.presetRate;
+      const rate = (p.presetMode >= 1.5 ? (bpm / 60) / this.presetBeats : p.presetRate) * this.evRate;
       this.presetPhase = (this.presetPhase + rate * dt) % 1;
       let presetAz;
       if (p.presetMode >= 0.5 && p.presetMode < 1.5) {
@@ -275,7 +287,38 @@
         this.out = wrap180(-geometryBase);
         this.effective = 0;
       }
+      this._events(dt, engine, geometryBase);
       engine.setAzimuth(this.stem, this.effective);
+    }
+
+    // Sound events on top of everything above: the layer reads the stem's
+    // own audio, and while it is doing something it moves the stem
+    // (Override / Offset), speeds up its preset motion (Modulate) and sets
+    // its distance cues. bridge/server.js's eventsTick does the same for Pd.
+    _events(dt, engine, geometryBase) {
+      const p = this.params, L = this.events;
+      const active = this.armed && p.evOn === 1;
+      if (!active && !L.beh && L.w === 0) {
+        if (this.ev) { this.ev = null; this.evRate = 1; engine.setDistance(this.stem, { gain: 1, cutoff: 20000, delayMs: 0 }); }
+        return;
+      }
+      const f = active ? engine.featuresOf(this.stem) : null;
+      const o = L.tick(dt, {
+        p, stemAz: this.effective, phoneAz: this.phoneAz(geometryBase), active,
+        frame: f && { t: performance.now() / 1000, level: f.level, hi: f.hi, lo: f.lo },
+      });
+      this.ev = o;
+      this.evRate = o.rate;
+      this.effective = o.az;
+      engine.setDistance(this.stem, o.cues);
+    }
+
+    // Where this stem's phone is pointing, as an absolute direction.
+    phoneAz(geometryBase) { return wrap180(geometryBase + this.params.base + this.phone); }
+
+    // A test event from the panel, whether or not anything was heard.
+    fireEvent(type, geometryBase) {
+      this.events.fire(type, 0.8, { p: this.params, stemAz: this.effective, phoneAz: this.phoneAz(geometryBase) }, true);
     }
 
     // The azimuth for the beat the song is on now, or null to hold the last one
@@ -394,6 +437,7 @@
       return this._songLevel;
     }
     setPhone(stem, rotateDeg) { this.stems[stem].phone = rotateDeg; }
+    fireEvent(stem, type) { this.stems[stem].fireEvent(type, this.engine.geometry[stem].azimuth); }
     setArmed(stem, on) { this.stems[stem].armed = !!on; }
     setParam(stem, param, value) {
       this.stems[stem].set(param, value);
