@@ -43,7 +43,7 @@ let selectedStems = new Set(ALL_STEMS);
 // Who moves a stem: its phone, the camera, its spatial motion, or nobody -
 // one at a time. Phone and camera leave the spatial motion sources off (the
 // phone-only blend); spatial turns them on (the stem's last spatial setup, or
-// its Auto role the first time). The spatial menu shows the same choice.
+// presets the first time). The spatial menu shows the same choice.
 const ctlName = [null, 'phone', 'cam', 'spatial'];
 const ctl = {};
 for (const s of ALL_STEMS) ctl[s] = 'phone';
@@ -397,7 +397,7 @@ function setArmed(stem, on, quiet) {
 }
 
 // A stem with a spatial source in its blend is under spatial control, whatever
-// set it (this page, a loaded setup, the Auto role, the sliders).
+// set it (this page, a loaded setup, the sliders).
 function syncControl(stem) {
   const st = spatial[stem];
   if (!st) return;
@@ -421,10 +421,12 @@ function setControl(stem, to) {   // 'phone' | 'cam' | 'spatial' | null
         st.blendMode = b.mode; sendSpatial(stem, 'blendMode', b.mode);
         st.blendWeights2 = b.w2.slice(); sendSpatial(stem, 'blendWeights2', b.w2.slice());
         st.blendWeights3 = b.w3.slice(); sendSpatial(stem, 'blendWeights3', b.w3.slice());
-      } else {
-        applyRole(stem);
       }
-      if (fftWeight(st) <= W_ON && presetWeight(st) <= W_ON) setSourceOn(stem, 'preset', true);
+      // Nothing from FFT or presets yet (never spatial, or saved as phone-only): start on Presets.
+      if (fftWeight(st) <= W_ON && presetWeight(st) <= W_ON) {
+        st.blendMode = 0; sendSpatial(stem, 'blendMode', 0);
+        st.blendWeights2 = [0, 1]; sendSpatial(stem, 'blendWeights2', [0, 1]);
+      }
     }
   } else if (wasSpatial) {
     savedBlend[stem] = { mode: st.blendMode, w2: st.blendWeights2.slice(), w3: st.blendWeights3.slice() };
@@ -632,17 +634,6 @@ bindSegRow(presetModeRow, (v) => {
   else { sendSpatial(stem, 'presetMode', v); if (presetWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'preset', true); }
   refreshSpatialPanel();
 });
-// Auto role: the whole role table (js/roles.js) sent through the ordinary
-// spatial setters, so the panel then shows - and can adjust - exactly what it set.
-function applyRole(stem) {
-  SSRoles.plan(stem, ALL_STEMS.indexOf(stem)).forEach(([param, value]) => sendSpatial(stem, param, value));
-}
-bindSegRow($('roleRow'), (v) => {
-  if (!activeSpatialStem) return;
-  if (v === 'all') ALL_STEMS.forEach(applyRole); else applyRole(activeSpatialStem);
-  refreshSpatialPanel();
-});
-
 bindSegRow(smoothingModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'smoothingMode', v); refreshSpatialPanel(); } });
 bindSegRow(tempoSourceRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'tempoSource', v); refreshSpatialPanel(); } });
 
@@ -728,9 +719,8 @@ function refreshSpatialRows() {
     smoothingHint.textContent = (st.smoothingMode === 1 ? 'Quiet = smooth glide, loud = up to Max.' : 'Loud = smooth glide, quiet = up to Max.') +
       ' Now ' + motion.stems[activeSpatialStem].smoothingNow.toFixed(2) + '.';
   }
-  $('roleLabel').textContent = (SSRoles.ROLES[activeSpatialStem] || {}).label || '';
   const beatsOn = fftOn && st.fftMode === 6;
-  fftSrcBlock.hidden = !fftOn || beatsOn;   // Beat steps has its own source row
+  fftSrcBlock.hidden = beatsOn;   // Beat steps has its own source row
   beatBlock.hidden = !beatsOn;
   if (beatsOn) {
     setSegActive(beatSrcRow, st.beatSrc);

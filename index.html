@@ -574,9 +574,13 @@
       </div>
 
       <div id="fftSection">
-      <div class="field-label">FFT source (drives azimuth from this stem's own audio)</div>
+      <div id="fftSrcBlock">
+        <div class="field-label">From which stem (its sound drives the movement &mdash; any stem can move another)</div>
+        <div class="seg-row" id="fftSrcRow"><!-- one button per stem, built from the stem list --></div>
+      </div>
+
+      <div class="field-label">Algorithm</div>
       <div class="seg-row" id="fftModeRow">
-        <button class="seg-btn off" data-value="-1">Off</button>
         <button class="seg-btn" data-value="0">Pitch</button>
         <button class="seg-btn" data-value="1">Onset</button>
         <button class="seg-btn" data-value="2">Band</button>
@@ -586,11 +590,6 @@
         <button class="seg-btn" data-value="6">Beat steps</button>
       </div>
       <div class="hint left">Follow = the stem's own stereo position. Sections = a new spot at each change in the song (wide when loud). Beat steps = hops to the next position on each beat.</div>
-
-      <div id="fftSrcBlock">
-        <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
-        <div class="seg-row" id="fftSrcRow"><!-- one button per stem, built from the stem list --></div>
-      </div>
 
       <!-- Beat steps: the stem jumps to the next position on each beat. The
            beats come from analysing the song (js/beats.js, in this page), so any stem's
@@ -638,12 +637,6 @@
         <div class="hint" id="beatsHint" style="text-align:left"></div>
       </div>
 
-      </div>
-
-      <div class="field-label">Auto role &mdash; <span id="roleLabel"></span></div>
-      <div class="seg-row" id="roleRow">
-        <button class="seg-btn" data-value="one">Set this stem</button>
-        <button class="seg-btn" data-value="all">Set all stems</button>
       </div>
 
       <div id="presetSection">
@@ -963,7 +956,6 @@
 <script src="js/vendor/jsQR.js"></script>
 <script src="js/qr.js"></script>
 <script src="js/beats.js"></script>
-<script src="js/roles.js"></script>
 <script src="js/events.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/motion.js"></script>
