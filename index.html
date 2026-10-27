@@ -96,6 +96,8 @@
              border-radius: 7px; font-size: 0.62rem; font-weight: 700; padding: 7px 4px; cursor: pointer; text-transform: uppercase; }
   .seg-btn.active { background: rgba(0,255,136,0.16); border-color: #0f8; color: #0f8; }
   .field-label { font-size: 0.62rem; color: #8c8c8c; text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 4px; }
+  .ev-head { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0; margin: 8px 0 4px; cursor: pointer; font: inherit; font-size: 0.62rem; color: #8c8c8c; text-transform: uppercase; letter-spacing: 0.05em; }
+  .ev-head:hover { color: #0f8; }
   .weight-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-width: 0; }
   .weight-row label { font-size: 0.64rem; color: #999; width: 32px; flex: none; }
   /* min-width:0 matters here specifically: a range input's default intrinsic
@@ -571,6 +573,7 @@
         <div class="weight-row"><label>FFT&harr;Preset</label><input type="range" id="ts2" min="0" max="1" step="0.01"><output id="ts2Out"></output></div>
       </div>
 
+      <div id="fftSection">
       <div class="field-label">FFT source (drives azimuth from this stem's own audio)</div>
       <div class="seg-row" id="fftModeRow">
         <button class="seg-btn off" data-value="-1">Off</button>
@@ -635,12 +638,15 @@
         <div class="hint" id="beatsHint" style="text-align:left"></div>
       </div>
 
+      </div>
+
       <div class="field-label">Auto role &mdash; <span id="roleLabel"></span></div>
       <div class="seg-row" id="roleRow">
         <button class="seg-btn" data-value="one">Set this stem</button>
         <button class="seg-btn" data-value="all">Set all stems</button>
       </div>
 
+      <div id="presetSection">
       <div class="field-label">Preset motion</div>
       <div class="seg-row" id="presetModeRow">
         <button class="seg-btn off" data-value="-1">Off</button>
@@ -663,10 +669,13 @@
         <div class="hint left" id="tempoHint" hidden></div>
       </div>
 
+      </div>
+
       <!-- Sound events (js/events.js, the same file on both rigs): this stem's own audio is
            listened to live, and a whoosh, riser, impact or pad sets off a matching movement. -->
       <div class="ev-section">
-        <div class="field-label">Sound events &mdash; moves this stem when it hears a whoosh, riser, impact or pad</div>
+        <button type="button" class="ev-head" id="evToggle" aria-expanded="false">&#9656; Sound events &mdash; moves this stem when it hears a whoosh, riser, impact or pad</button>
+        <div id="evBody" hidden>
         <div class="seg-row" id="evOnRow">
           <button class="seg-btn off" data-value="0">Off</button>
           <button class="seg-btn" data-value="1">Listen</button>
@@ -724,6 +733,7 @@
           <div class="weight-row" id="evRoomRow"><label>Room</label><input type="range" id="evRoom" min="2" max="40" step="1"><output id="evRoomOut"></output></div>
           <div class="hint left" id="evCuesHint"></div>
         </div>
+              </div>
       </div>
 
       <div class="field-label">Position (reference point &mdash; also set by dragging the dial)</div>

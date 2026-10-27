@@ -498,7 +498,7 @@ function setMuted(stem, m, quiet) {
 /* ---------------- spatial (motion) advanced panel ---------------- */
 
 const spatialPanel = $('spatialPanel'), spatialStemName = $('spatialStemName');
-const sourceRow = $('sourceRow'), mixRow = $('mixRow');
+const sourceRow = $('sourceRow'), mixRow = $('mixRow'), fftSection = $('fftSection'), presetSection = $('presetSection');
 const fftModeRow = $('fftModeRow'), fftSrcRow = $('fftSrcRow'), presetModeRow = $('presetModeRow'), tempoSourceRow = $('tempoSourceRow');
 const smoothingModeRow = $('smoothingModeRow'), smoothingLabel = $('smoothingLabel'), smoothingHint = $('smoothingHint');
 const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), tempoBlock = $('tempoBlock');
@@ -714,6 +714,8 @@ function refreshSpatialRows() {
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
   setSegActive(sourceRow, fftOn && presetOn ? 2 : presetOn ? 1 : fftOn ? 0 : -1);
   mixRow.hidden = !(fftOn && presetOn);
+  fftSection.hidden = presetOn && !fftOn;     // Presets only: no FFT settings
+  presetSection.hidden = fftOn && !presetOn;  // FFT only: no preset motion settings
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
   setSegActive(fftSrcRow, st.fftSrc);
   setSegActive(presetModeRow, presetOn ? st.presetMode : -1);
@@ -745,6 +747,14 @@ function refreshSpatialRows() {
   presetRateBlock.hidden = !presetOn;
   tempoBlock.hidden = !(presetOn && st.presetMode === 2);
 }
+
+// Sound events fold away: the section is long and most stems never use it.
+document.getElementById('evToggle').addEventListener('click', () => {
+  const body = document.getElementById('evBody'), btn = document.getElementById('evToggle');
+  body.hidden = !body.hidden;
+  btn.setAttribute('aria-expanded', String(!body.hidden));
+  btn.innerHTML = (body.hidden ? '&#9656; ' : '&#9662; ') + btn.innerHTML.slice(2);
+});
 
 function refreshSpatialPanel() {
   if (!activeSpatialStem) return;
