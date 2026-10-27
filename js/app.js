@@ -50,10 +50,11 @@ for (const s of ALL_STEMS) ctl[s] = 'phone';
 // The paired phones (filled in by the pairing block further down): the spatial menu's phone
 // picker reads the list and assigns a stem to one phone, or to none ("any phone").
 const phoneHub = { phones: [], assignStem() {} };
+let panelMode = 'spatial';   // which mode's settings the Motion control menu is showing: 'phone' | 'cam' | 'spatial'
 let phonePickSig = '';
 function renderPhonePick() {
   const stem = activeSpatialStem, block = $('phonePickBlock'), row = $('phonePickRow');
-  block.hidden = !stem || ctl[stem] !== 'phone';
+  block.hidden = !stem || panelMode !== 'phone';
   if (block.hidden) { phonePickSig = ''; return; }
   const owner = phoneHub.phones.find((p) => p.stems && p.stems.includes(stem)) || null;
   // Rebuilt only when something changed: this runs on every panel refresh, and replacing the
@@ -189,10 +190,10 @@ function buildCards() {
     };
     cards[stem].mute.addEventListener('click', () => setMuted(stem, !mutedStems.has(stem)));
     cards[stem].arm.addEventListener('click', () => setArmed(stem, !selectedStems.has(stem)));
-    cards[stem].phone.addEventListener('click', () => toggleControl('phone', stem));
-    cards[stem].cam.addEventListener('click', () => toggleControl('cam', stem));
+    cards[stem].phone.addEventListener('click', () => openMotion(stem, 'phone'));
+    cards[stem].cam.addEventListener('click', () => openMotion(stem, 'cam'));
     card.querySelector('.center-btn').addEventListener('click', () => centerStem(stem));
-    cards[stem].spatial.addEventListener('click', () => toggleControl('spatial', stem));
+    cards[stem].spatial.addEventListener('click', () => openMotion(stem, 'spatial'));
     // An audio file dropped on a card becomes that stem (adds it, or replaces what it had).
     card.addEventListener('dragover', (ev) => {
       if (!draggingFiles(ev)) return;
@@ -211,7 +212,7 @@ function buildCards() {
     });
     card.addEventListener('click', (ev) => {   // anywhere on the card but its controls
       if (ev.target.closest('button, .knob, .fader')) return;
-      if (activeSpatialStem !== stem) openSpatialPanel(stem);
+      if (activeSpatialStem !== stem) { panelMode = ctl[stem] === 'phone' || ctl[stem] === 'cam' ? ctl[stem] : 'spatial'; openSpatialPanel(stem); }
     });
     cards[stem].led.addEventListener('click', () => openLedPanel(stem));
     cards[stem].ext.addEventListener('click', () => openExtPanel(stem));
@@ -295,6 +296,7 @@ function refreshCards() {
     k.mute.setAttribute('aria-pressed', m);
     k.card.classList.toggle('muted', m);
     const gone = stemAbsent(stem);
+    k.card.style.order = gone ? 1 : 0;   // stems the song has come first
     const note = gone ? 'empty' : stemNote(stem);
     k.note.textContent = note;
     k.note.title = note === 'rest' ? 'Whatever the drum parts did not catch' : gone ? 'Not in this song - drop an audio file on this card to add it' : '';
@@ -434,11 +436,6 @@ function setControl(stem, to) {   // 'phone' | 'cam' | 'spatial' | null
   }
   ctl[stem] = to;
   refreshCards(); refreshSpatialPanel();
-}
-
-function toggleControl(via, stem) {
-  setControl(stem, ctl[stem] === via ? null : via);
-  buzz(15);
 }
 
 // CENTER: wherever the stem is heard from right now becomes front. Its reference point (base) moves
@@ -662,6 +659,16 @@ spatialBaseEl.addEventListener('input', () => {
   placeStem(stem, Number(spatialBaseEl.value));
 });
 
+// The PHONE / CAM / SPATIAL buttons on a stem card each open that stem's menu for that one mode:
+// the stem is set to it and only its settings show. Tapping the same button again closes the menu.
+const MODE_LABEL = { phone: 'PHONE', cam: 'CAMERA', spatial: 'SPATIAL' };
+function openMotion(stem, mode) {
+  if (activeSpatialStem === stem && panelMode === mode) { openSpatialPanel(stem); return; }
+  panelMode = mode;
+  setControl(stem, mode);
+  if (activeSpatialStem !== stem) openSpatialPanel(stem); else refreshSpatialPanel();
+}
+
 function openSpatialPanel(stem) {
   activeSpatialStem = (activeSpatialStem === stem) ? null : stem;
   spatialPanel.hidden = activeSpatialStem === null;
@@ -696,8 +703,9 @@ function refreshSpatialRows() {
   const st = spatial[activeSpatialStem];
   syncControl(activeSpatialStem);
   setSegActive($('ctlRow'), Math.max(0, ctlName.indexOf(ctl[activeSpatialStem])));
+  spatialStemName.textContent = stemTitle(activeSpatialStem) + ' · ' + MODE_LABEL[panelMode];
   renderPhonePick();
-  for (const [id, mode] of [['secPhone', 'phone'], ['secCam', 'cam'], ['secSpatial', 'spatial']]) document.getElementById(id).hidden = ctl[activeSpatialStem] !== mode;
+  for (const [id, mode] of [['secPhone', 'phone'], ['secCam', 'cam'], ['secSpatial', 'spatial']]) document.getElementById(id).hidden = panelMode !== mode;
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
   setSegActive(sourceRow, fftOn && presetOn ? 2 : presetOn ? 1 : fftOn ? 0 : -1);
   mixRow.hidden = !(fftOn && presetOn);
