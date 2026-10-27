@@ -496,18 +496,61 @@
     <div id="spatialPanel" hidden>
       <div class="spatial-title"><span>SPATIAL &mdash; <span id="spatialStemName"></span></span><button id="spatialCloseBtn" class="close-btn" title="Close" aria-label="Close spatial panel">&times;</button></div>
 
-      <div class="field-label">Controlled by &mdash; one at a time. Phone and Camera switch the motion sources below off; Spatial switches them on</div>
+      <div class="field-label">Controlled by &mdash; one at a time</div>
       <div class="seg-row" id="ctlRow">
-        <button class="seg-btn off" data-value="0">None</button>
         <button class="seg-btn" data-value="1">Phone</button>
         <button class="seg-btn" data-value="2">Camera</button>
         <button class="seg-btn" data-value="3">Spatial</button>
       </div>
+      <div id="secPhone" hidden>
       <div id="phonePickBlock" hidden>
         <div class="field-label">Which phone moves this stem</div>
         <div class="seg-row" id="phonePickRow"></div>
         <div class="hint" id="phonePickHint"></div>
       </div>
+    <div id="sensorOptions" hidden>
+      <div class="field-label">Phone turn direction (swap if turning right sends the sound left)</div>
+      <div class="seg-row" id="phoneInvertRow">
+        <button class="seg-btn" data-value="0">Normal</button>
+        <button class="seg-btn" data-value="1">Inverted</button>
+      </div>
+      <div class="field-label">Sensor (Compass: same direction always gives the same position; Gyro: smoother, but drifts)</div>
+      <div class="seg-row" id="sensorModeRow">
+        <button class="seg-btn" data-value="1">Compass (absolute)</button>
+        <button class="seg-btn" data-value="0">Gyro (relative)</button>
+      </div>
+      <div class="field-label">Turn calibration (Gyro mode only: this phone's gyro reads a full turn short or long)</div>
+      <div class="preset-row">
+        <button id="turnCalBtn">Calibrate 360&deg;</button>
+        <button id="turnCalResetBtn">Reset</button>
+      </div>
+      <div class="hint" id="turnCalOut"></div>
+      <div class="hint" id="sensorDbg"></div>
+    </div>
+      </div>
+      <div id="secCam" hidden>
+    <div id="handBtn">Camera tracking: off (set a stem to Camera)</div>
+    <div id="handPanel" hidden>
+      <div class="cam mirror" id="camBox">
+        <video id="handVideo" playsinline muted></video>
+        <canvas id="handCanvas"></canvas>
+      </div>
+      <div id="handStatus">off</div>
+      <div class="field-label">Gesture</div>
+      <div class="seg-row" id="handModeRow">
+        <button class="seg-btn active" data-value="0">Pinch to grab</button>
+        <button class="seg-btn" data-value="1">Open hand steers</button>
+      </div>
+      <div class="hint" id="handModeHint">Pinch thumb + index near a stem on the radar to pick it up and drag it round your head; pinch in empty space to rotate every armed stem together. Two hands, two stems.</div>
+      <div class="weight-row"><label>Reach</label><input type="range" id="handReach" min="0.6" max="2.5" step="0.05" value="1.4"><output id="handReachOut">1.40</output></div>
+      <div class="hand-row">
+        <button id="handFlipBtn">Flip camera</button>
+        <button id="handMirrorBtn">Mirror: on</button>
+      </div>
+      <div class="hint">Runs on your device (MediaPipe); the camera image never leaves this page. Good light, hand roughly at chest height, 40&ndash;80 cm from the camera.</div>
+    </div>
+      </div>
+      <div id="secSpatial" hidden>
 
       <div class="field-label">Smoothing (final output, any source &mdash; left = smooth/gliding, right = instant/jittery)</div>
       <div class="seg-row" id="smoothingModeRow">
@@ -693,6 +736,7 @@
 
       <div class="field-label">Position (reference point &mdash; also set by dragging the dial)</div>
       <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
+      </div>
     </div>
   </aside>
 
@@ -768,45 +812,6 @@
     <div id="leakRow" title="Every stem also plays equally from every speaker, this much of the way. 0 = purely panned, 100 = every speaker hears the same mix">
       <span class="field-label" id="leakLabel">Leak to all speakers 0%</span>
       <input type="range" id="leakSlider" min="0" max="1" step="0.01" value="0" aria-label="Leak of every stem to all speakers">
-    </div>
-    <div id="sensorOptions" hidden>
-      <div class="field-label">Phone turn direction (swap if turning right sends the sound left)</div>
-      <div class="seg-row" id="phoneInvertRow">
-        <button class="seg-btn" data-value="0">Normal</button>
-        <button class="seg-btn" data-value="1">Inverted</button>
-      </div>
-      <div class="field-label">Sensor (Compass: same direction always gives the same position; Gyro: smoother, but drifts)</div>
-      <div class="seg-row" id="sensorModeRow">
-        <button class="seg-btn" data-value="1">Compass (absolute)</button>
-        <button class="seg-btn" data-value="0">Gyro (relative)</button>
-      </div>
-      <div class="field-label">Turn calibration (Gyro mode only: this phone's gyro reads a full turn short or long)</div>
-      <div class="preset-row">
-        <button id="turnCalBtn">Calibrate 360&deg;</button>
-        <button id="turnCalResetBtn">Reset</button>
-      </div>
-      <div class="hint" id="turnCalOut"></div>
-      <div class="hint" id="sensorDbg"></div>
-    </div>
-    <div id="handBtn">Camera tracking: off (set a stem to Camera)</div>
-    <div id="handPanel" hidden>
-      <div class="cam mirror" id="camBox">
-        <video id="handVideo" playsinline muted></video>
-        <canvas id="handCanvas"></canvas>
-      </div>
-      <div id="handStatus">off</div>
-      <div class="field-label">Gesture</div>
-      <div class="seg-row" id="handModeRow">
-        <button class="seg-btn active" data-value="0">Pinch to grab</button>
-        <button class="seg-btn" data-value="1">Open hand steers</button>
-      </div>
-      <div class="hint" id="handModeHint">Pinch thumb + index near a stem on the radar to pick it up and drag it round your head; pinch in empty space to rotate every armed stem together. Two hands, two stems.</div>
-      <div class="weight-row"><label>Reach</label><input type="range" id="handReach" min="0.6" max="2.5" step="0.05" value="1.4"><output id="handReachOut">1.40</output></div>
-      <div class="hand-row">
-        <button id="handFlipBtn">Flip camera</button>
-        <button id="handMirrorBtn">Mirror: on</button>
-      </div>
-      <div class="hint">Runs on your device (MediaPipe); the camera image never leaves this page. Good light, hand roughly at chest height, 40&ndash;80 cm from the camera.</div>
     </div>
   </section>
 

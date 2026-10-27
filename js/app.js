@@ -706,6 +706,7 @@ function refreshSpatialRows() {
   syncControl(activeSpatialStem);
   setSegActive($('ctlRow'), Math.max(0, ctlName.indexOf(ctl[activeSpatialStem])));
   renderPhonePick();
+  for (const [id, mode] of [['secPhone', 'phone'], ['secCam', 'cam'], ['secSpatial', 'spatial']]) document.getElementById(id).hidden = ctl[activeSpatialStem] !== mode;
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
   setSegActive(blendModeRow, st.blendMode);
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
