@@ -39,6 +39,8 @@
   <p class="sub">Turn this phone into the motion control for a SpatialStage web app running on another computer. Nothing is installed on the PC: the two pages talk directly to each other.</p>
 
   <div id="pairing">
+    <div class="step">Your name</div>
+    <input id="userName" maxlength="30" placeholder="e.g. Anna - shown on the PC so it can give you stems" autocomplete="off" style="width:100%;background:#1c1c1c;color:#eee;border:1px solid rgba(255,255,255,0.2);border-radius:10px;padding:12px;font-size:1rem">
     <div class="step">1 &middot; Paste the code from the PC</div>
     <textarea id="offer" placeholder="On the PC, open the web app, Control window &rarr; Pair a phone, copy the code and paste it here" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
     <div class="row"><button id="scanBtn">Scan the PC&rsquo;s QR</button></div>
@@ -108,9 +110,13 @@ guest.onState = (st, connected) => {
 };
 // The PC says which stems this phone moves (it assigns them); the phone only shows it.
 function deviceName() {
+  const typed = $('userName').value.trim();
+  try { localStorage.setItem('userName', typed); } catch (e) {}
+  if (typed) return typed;
   const ua = navigator.userAgent;
   return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : (/Android[^;]*;\s*([^;)]+)/.exec(ua) || [])[1] || 'Phone';
 }
+try { $('userName').value = localStorage.getItem('userName') || ''; } catch (e) {}
 guest.onMessage = (m) => {
   if (m.t === 'hello') $('note').textContent = 'The PC page is listening.';
   else if (m.t === 'assign') $('assigned').textContent = 'Steering: ' + (m.stems && m.stems.length ? m.stems.join(', ').toUpperCase() : 'every stem set to Phone');

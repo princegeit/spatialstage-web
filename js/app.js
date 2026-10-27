@@ -63,10 +63,9 @@ function renderPhonePick() {
     b.addEventListener('click', () => phoneHub.assignStem(stem, target));
     row.appendChild(b);
   };
-  add('Any phone', null);
-  for (const p of phoneHub.phones) add(p.name, p);
+  for (const p of phoneHub.phones) add(p.name, owner === p ? null : p);
   $('phonePickHint').textContent = phoneHub.phones.length
-    ? (owner ? 'Only ' + owner.name + ' moves this stem.' : 'Every paired phone without its own stems moves this stem.')
+    ? ''
     : 'No phone connected yet. Use "Pair a phone" in the Control window.';
 }
 const savedBlend = {};
@@ -2831,7 +2830,6 @@ setInterval(syncSources, 1000);
   }
   phoneHub.assignStem = assignStem;
   const btn = $('pairBtn'), box = $('pairBox'), offerEl = $('pairOffer'), answerEl = $('pairAnswer'), st = $('pairStatus');
-  const phonesBox = $('phonesBox'), phonesList = $('phonesList');
   const say = (t) => { st.textContent = t; };
   function live() {
     pairLive = phones.length > 0;
@@ -2844,33 +2842,8 @@ setInterval(syncSources, 1000);
     p.host.send({ t: 'assign', stems: p.stems });
     renderPhones();
   }
-  function renderPhones() {
-    phonesBox.hidden = phones.length === 0;
-    phonesList.textContent = '';
-    for (const p of phones) {
-      const row = document.createElement('div');
-      const name = document.createElement('div'); name.className = 'field-label'; name.textContent = p.name;
-      const drop = document.createElement('button'); drop.className = 'seg-btn'; drop.textContent = 'Disconnect'; drop.style.marginLeft = '8px';
-      drop.addEventListener('click', () => { p.host.close(); forget(p); });
-      name.appendChild(drop);
-      row.appendChild(name);
-      const chips = document.createElement('div'); chips.className = 'seg-row';
-      for (const stem of ALL_STEMS) {
-        if (!stemShown(stem)) continue;
-        const b = document.createElement('button');
-        b.className = 'seg-btn' + (p.stems && p.stems.includes(stem) ? ' active' : '');
-        b.textContent = stemTitle(stem);
-        b.addEventListener('click', () => assignStem(stem, p.stems && p.stems.includes(stem) ? null : p));
-        chips.appendChild(b);
-      }
-      row.appendChild(chips);
-      phonesList.appendChild(row);
-    }
-    renderPhonePick();
-  }
+  function renderPhones() { renderPhonePick(); }
   function forget(p) { const i = phones.indexOf(p); if (i >= 0) phones.splice(i, 1); live(); }
-  // The stems list changes as stems are added or removed: keep the chips current.
-  setInterval(() => { if (phones.length && !phonesList.contains(document.activeElement)) renderPhones(); }, 3000);
   function wire(h) {
     let p = null;
     h.onState = (state, connected) => {
