@@ -507,19 +507,9 @@ const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), te
 const ts2El = $('ts2');
 const presetRateEl = $('presetRate'), smoothingSliderEl = $('smoothingSlider');
 const spatialBpmEl = $('spatialBpm'), spatialBaseEl = $('spatialBase');
-const beatBlock = $('beatBlock'), beatSrcRow = $('beatSrcRow'), beatEveryRow = $('beatEveryRow'), beatFollowRow = $('beatFollowRow');
+const beatBlock = $('beatBlock'), beatEveryRow = $('beatEveryRow'), beatFollowRow = $('beatFollowRow');
 const beatSenseRow = $('beatSenseRow'), beatSenseBlock = $('beatSenseBlock'), beatStepsRow = $('beatStepsRow'), beatPatternRow = $('beatPatternRow');
 const beatNudgeEl = $('beatNudge'), beatNudgeOutEl = $('beatNudgeOut'), beatsHintEl = $('beatsHint');
-// One button per stem, then the whole mix (value = number of stems).
-[...ALL_STEMS, null].forEach((s, i) => {
-  if (s && IS_INPUT.has(s)) return;   // a live input has no beats analysed offline
-  const btn = document.createElement('button');
-  btn.className = 'seg-btn';
-  btn.dataset.value = i;
-  btn.textContent = s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Whole mix';
-  beatSrcRow.appendChild(btn);
-});
-
 ALL_STEMS.forEach((s, i) => {
   const btn = document.createElement('button');
   btn.className = 'seg-btn';
@@ -527,6 +517,9 @@ ALL_STEMS.forEach((s, i) => {
   btn.textContent = s.charAt(0).toUpperCase() + s.slice(1);
   fftSrcRow.appendChild(btn);
 });
+const fftMixBtn = document.createElement('button');   // Beat steps can also follow the whole mix
+fftMixBtn.className = 'seg-btn'; fftMixBtn.dataset.value = ALL_STEMS.length; fftMixBtn.textContent = 'Whole mix'; fftMixBtn.hidden = true;
+fftSrcRow.appendChild(fftMixBtn);
 
 function sendSpatial(stem, param, value) { motion.setParam(stem, param, value); markModified(); }
 
@@ -594,12 +587,14 @@ bindSegRow(fftModeRow, (v) => {
       // between speakers, so give the FFT source all of it (the blend rows can still be changed).
       sendSpatial(stem, 'blendMode', 0);
       sendSpatial(stem, 'blendWeights2', [1, 0]);
+      const src = spatial[stem].fftSrc;
+      if (!IS_INPUT.has(ALL_STEMS[src])) sendSpatial(stem, 'beatSrc', src);   // the stem row above is the beat source too
       engine.beatsOf();   // start analysing the song now rather than at the first tick
     }
   }
   refreshSpatialPanel();
 });
-for (const [row, param] of [[beatSrcRow, 'beatSrc'], [beatEveryRow, 'beatEvery'], [beatStepsRow, 'beatSteps'], [beatPatternRow, 'beatPattern'], [beatFollowRow, 'beatFollow'], [beatSenseRow, 'beatSense']]) {
+for (const [row, param] of [[beatEveryRow, 'beatEvery'], [beatStepsRow, 'beatSteps'], [beatPatternRow, 'beatPattern'], [beatFollowRow, 'beatFollow'], [beatSenseRow, 'beatSense']]) {
   bindSegRow(row, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, v); refreshSpatialPanel(); } });
 }
 beatNudgeEl.addEventListener('input', () => {
@@ -626,7 +621,16 @@ function beatsHintText(st) {
   return src.bpm.toFixed(1) + ' BPM · ' + src.beats.length + ' beats · ' + Math.round(src.confidence * 100) + '% sure' +
     (src.forced ? ' · following the song tempo' : '');
 }
-bindSegRow(fftSrcRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'fftSrc', v); refreshSpatialPanel(); } });
+// One stem row for every algorithm. Beat steps takes its beats from the same choice (a stem, or the
+// whole mix) so it never asks again; the other algorithms analyse the stem, and the whole mix is
+// only offered for beats.
+bindSegRow(fftSrcRow, (v) => {
+  const stem = activeSpatialStem;
+  if (!stem) return;
+  if (v < ALL_STEMS.length) sendSpatial(stem, 'fftSrc', v);
+  if (v >= ALL_STEMS.length || !IS_INPUT.has(ALL_STEMS[v])) sendSpatial(stem, 'beatSrc', v);   // a live input has no beats to analyse
+  refreshSpatialPanel();
+});
 bindSegRow(presetModeRow, (v) => {
   const stem = activeSpatialStem;
   if (!stem) return;
@@ -708,7 +712,8 @@ function refreshSpatialRows() {
   fftSection.hidden = presetOn && !fftOn;     // Presets only: no FFT settings
   presetSection.hidden = fftOn && !presetOn;  // FFT only: no preset motion settings
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
-  setSegActive(fftSrcRow, st.fftSrc);
+  setSegActive(fftSrcRow, fftOn && st.fftMode === 6 ? st.beatSrc : st.fftSrc);
+  fftMixBtn.hidden = !(fftOn && st.fftMode === 6);
   setSegActive(presetModeRow, presetOn ? st.presetMode : -1);
   setSegActive(tempoSourceRow, st.tempoSource);
   const levelMode = st.smoothingMode === 1 || st.smoothingMode === 2;
@@ -720,10 +725,8 @@ function refreshSpatialRows() {
       ' Now ' + motion.stems[activeSpatialStem].smoothingNow.toFixed(2) + '.';
   }
   const beatsOn = fftOn && st.fftMode === 6;
-  fftSrcBlock.hidden = beatsOn;   // Beat steps has its own source row
   beatBlock.hidden = !beatsOn;
   if (beatsOn) {
-    setSegActive(beatSrcRow, st.beatSrc);
     setSegActive(beatEveryRow, st.beatEvery);
     setSegActive(beatStepsRow, st.beatSteps);
     setSegActive(beatPatternRow, st.beatPattern);
