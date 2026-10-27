@@ -659,14 +659,13 @@ spatialBaseEl.addEventListener('input', () => {
   placeStem(stem, Number(spatialBaseEl.value));
 });
 
-// The PHONE / CAM / SPATIAL buttons on a stem card each open that stem's menu for that one mode,
-// showing only its settings, and turn the mode on. Pressing the same button again while its menu is
-// open switches the mode off (or back on) without closing the menu; the menu's x closes it.
+// The PHONE / CAM / SPATIAL buttons on a stem card: every press turns that mode on or off for the
+// stem (on -> off, off -> on) and shows that mode's settings in the stem's menu, opening it if it
+// was closed. The menu stays open; its x closes it.
 const MODE_LABEL = { phone: 'PHONE', cam: 'CAMERA', spatial: 'SPATIAL' };
 function openMotion(stem, mode) {
-  const showing = activeSpatialStem === stem && panelMode === mode;
   panelMode = mode;
-  setControl(stem, showing && ctl[stem] === mode ? null : mode);
+  setControl(stem, ctl[stem] === mode ? null : mode);
   if (activeSpatialStem !== stem) openSpatialPanel(stem); else refreshSpatialPanel();
 }
 function openSpatialPanel(stem) {
