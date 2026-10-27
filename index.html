@@ -500,9 +500,9 @@
 
       <div class="field-label">Controlled by &mdash; one at a time</div>
       <div class="seg-row" id="ctlRow">
+        <button class="seg-btn" data-value="3">Spatial</button>
         <button class="seg-btn" data-value="1">Phone</button>
         <button class="seg-btn" data-value="2">Camera</button>
-        <button class="seg-btn" data-value="3">Spatial</button>
       </div>
       <div id="secPhone" hidden>
       <div id="phonePickBlock" hidden>
@@ -734,18 +734,7 @@
       <button id="muteAllBtn">Mute All</button>
     </div>
 
-    <div id="outputPanel">
-      <div class="field-label">Output &mdash; headphones (stereo) or four speakers (a 4-channel sound card)</div>
-      <div class="seg-row" id="quadOutputRow">
-        <button class="seg-btn active" data-value="0">Headphones</button>
-        <button class="seg-btn" data-value="1">Quad speakers</button>
-      </div>
-      <div class="field-label">Left / right &mdash; sound and LED strip together (swap if the room feels back-to-front)</div>
-      <div class="seg-row" id="lrSwapRow">
-        <button class="seg-btn active" data-value="0">Normal</button>
-        <button class="seg-btn" data-value="1">Swap L &harr; R</button>
-      </div>
-    </div>
+
   </section>
 
   <section class="panel" id="centerCol">
@@ -791,6 +780,18 @@
     <div id="leakRow" title="Every stem also plays equally from every speaker, this much of the way. 0 = purely panned, 100 = every speaker hears the same mix">
       <span class="field-label" id="leakLabel">Leak to all speakers 0%</span>
       <input type="range" id="leakSlider" min="0" max="1" step="0.01" value="0" aria-label="Leak of every stem to all speakers">
+    </div>
+    <div id="outputPanel">
+      <div class="field-label">Output &mdash; headphones (stereo) or four speakers (a 4-channel sound card)</div>
+      <div class="seg-row" id="quadOutputRow">
+        <button class="seg-btn active" data-value="0">Headphones</button>
+        <button class="seg-btn" data-value="1">Quad speakers</button>
+      </div>
+      <div class="field-label">Left / right &mdash; sound and LED strip together (swap if the room feels back-to-front)</div>
+      <div class="seg-row" id="lrSwapRow">
+        <button class="seg-btn active" data-value="0">Normal</button>
+        <button class="seg-btn" data-value="1">Swap L &harr; R</button>
+      </div>
     </div>
   </section>
 
