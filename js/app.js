@@ -70,7 +70,8 @@ function renderPhonePick() {
     b.addEventListener('click', () => phoneHub.assignStem(stem, owner === p ? null : p));
     row.appendChild(b);
   }
-  $('phonePickHint').textContent = phoneHub.phones.length ? '' : 'No phone connected yet. Use "Pair a phone" in the Control window.';
+  $('phonePickHint').textContent = !phoneHub.phones.length ? 'No phone connected yet. Use "Pair a phone" in the Control window.'
+    : owner ? '' : 'Not assigned: every connected phone moves this stem.';
 }
 const savedBlend = {};
 let songs = [], songIndex = -1;
@@ -2818,9 +2819,10 @@ setInterval(syncSources, 1000);
   let host = new SSPair.Host();
   const phones = phoneHub.phones;
   let phoneSeq = 0;
-  // A stem belongs to one phone at most; a phone with no stems of its own moves the stems nobody claimed.
-  const claimedByOther = (stem, p) => phones.some((q) => q !== p && q.stems && q.stems.includes(stem));
-  const stemsOf = (p) => p.stems || ALL_STEMS.filter((s) => !claimedByOther(s, p));
+  // A stem belongs to one phone at most. A phone moves the stems assigned to it, plus every stem no
+  // phone has claimed (so a stem set to Phone and given to nobody follows all connected phones).
+  const claimed = (stem) => phones.some((q) => q.stems && q.stems.includes(stem));
+  const stemsOf = (p) => ALL_STEMS.filter((s) => (p.stems && p.stems.includes(s)) || !claimed(s));
   function assignStem(stem, target) {
     for (const q of phones) {
       const has = !!(q.stems && q.stems.includes(stem));
