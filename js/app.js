@@ -2524,7 +2524,12 @@ function applyRotation(value, via) {
 // One buzz per button press, not one per stem.
 $('selectAllBtn').addEventListener('click', () => { ALL_STEMS.forEach(s => setArmed(s, true, true)); buzz(15); });
 $('selectNoneBtn').addEventListener('click', () => { ALL_STEMS.forEach(s => setArmed(s, false, true)); buzz(15); });
-$('muteNoneBtn').addEventListener('click', () => { ALL_STEMS.forEach(s => setMuted(s, false, true)); buzz(15); });
+// Unmute All also ends any solo, so nothing is left silent.
+$('muteNoneBtn').addEventListener('click', () => {
+  ALL_STEMS.forEach(s => setMuted(s, false, true));
+  soloStems.clear(); engine.setSolo(soloStems); refreshCards();
+  buzz(15);
+});
 $('muteAllBtn').addEventListener('click', () => { ALL_STEMS.forEach(s => setMuted(s, true, true)); buzz(15); });
 slider.addEventListener('input', () => applyRotation(Number(slider.value)));
 
