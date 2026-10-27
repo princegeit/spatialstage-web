@@ -3011,7 +3011,7 @@ if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); 
     sepCol: '<path d="M12 3v6l-6 4v8M12 9l6 4v8"/>',
     spatial: '<circle cx="12" cy="12" r="2.5"/><path d="M6.5 12a5.5 5.5 0 0 1 11 0M3 12a9 9 0 0 1 18 0"/>',
   };
-  const LABEL = { stemCol: 'Stems', centerCol: 'Control', songCol: 'Songs', sepCol: 'Split', spatial: 'Spatial' };
+  const LABEL = { stemCol: 'Stems', centerCol: 'Control', songCol: 'Songs', sepCol: 'Split', spatial: 'Motion control' };
   const ids = ['stemCol', 'centerCol', 'songCol', 'sepCol'].filter((id) => document.getElementById(id));
   const KEY = 'spatialstage.panels';
   const narrow = window.matchMedia('(max-width: 899px)');
@@ -3025,7 +3025,7 @@ if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); 
   for (const id of [...ids, 'spatial']) {
     const b = document.createElement('button');
     b.className = 'rail-btn'; b.type = 'button';
-    b.title = id === 'spatial' ? 'Spatial / LED settings for a stem' : 'Show or hide the ' + LABEL[id] + ' window';
+    b.title = id === 'spatial' ? 'Motion control / LED settings for a stem' : 'Show or hide the ' + LABEL[id] + ' window';
     b.innerHTML = '<svg viewBox="0 0 24 24">' + ICON[id] + '</svg><span>' + LABEL[id] + '</span>';
     b.addEventListener('click', () => id === 'spatial' ? toggleSide() : toggle(id));
     rail.appendChild(b); btns[id] = b;

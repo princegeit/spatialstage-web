@@ -424,6 +424,7 @@
           padding: 10px 0; overflow-y: auto; scrollbar-width: none; background: #161616; border-right: 1px solid rgba(255,255,255,0.08); z-index: 18; }
   .rail-btn { width: 44px; padding: 6px 0 4px; border-radius: 10px; border: 1px solid transparent; background: rgba(255,255,255,0.05); color: #b8b8b8; cursor: pointer;
               display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 0.5rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+  .rail-btn span { text-align: center; line-height: 1.1; }
   .rail-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .rail-btn:hover { color: #ddd; background: rgba(255,255,255,0.06); }
   .rail-btn.on { color: #0f8; background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.35); }
@@ -495,7 +496,7 @@
     </div>
 
     <div id="spatialPanel" hidden>
-      <div class="spatial-title"><span>SPATIAL &mdash; <span id="spatialStemName"></span></span><button id="spatialCloseBtn" class="close-btn" title="Close" aria-label="Close spatial panel">&times;</button></div>
+      <div class="spatial-title"><span>MOTION CONTROL &mdash; <span id="spatialStemName"></span></span><button id="spatialCloseBtn" class="close-btn" title="Close" aria-label="Close motion control panel">&times;</button></div>
 
       <div class="field-label">Controlled by &mdash; one at a time</div>
       <div class="seg-row" id="ctlRow">
