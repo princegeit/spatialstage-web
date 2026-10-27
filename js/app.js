@@ -47,6 +47,28 @@ let selectedStems = new Set(ALL_STEMS);
 const ctlName = [null, 'phone', 'cam', 'spatial'];
 const ctl = {};
 for (const s of ALL_STEMS) ctl[s] = 'phone';
+// The paired phones (filled in by the pairing block further down): the spatial menu's phone
+// picker reads the list and assigns a stem to one phone, or to none ("any phone").
+const phoneHub = { phones: [], assignStem() {} };
+function renderPhonePick() {
+  const stem = activeSpatialStem, block = $('phonePickBlock'), row = $('phonePickRow');
+  block.hidden = !stem || ctl[stem] !== 'phone';
+  if (block.hidden) return;
+  row.textContent = '';
+  const owner = phoneHub.phones.find((p) => p.stems && p.stems.includes(stem)) || null;
+  const add = (label, target) => {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (owner === target ? ' active' : '');
+    b.textContent = label;
+    b.addEventListener('click', () => phoneHub.assignStem(stem, target));
+    row.appendChild(b);
+  };
+  add('Any phone', null);
+  for (const p of phoneHub.phones) add(p.name, p);
+  $('phonePickHint').textContent = phoneHub.phones.length
+    ? (owner ? 'Only ' + owner.name + ' moves this stem.' : 'Every paired phone without its own stems moves this stem.')
+    : 'No phone connected yet. Use "Pair a phone" in the Control window.';
+}
 const savedBlend = {};
 let songs = [], songIndex = -1;
 let loadedSong = null;   // the songs[] entry whose audio is in the engine
@@ -681,6 +703,7 @@ function refreshSpatialRows() {
   const st = spatial[activeSpatialStem];
   syncControl(activeSpatialStem);
   setSegActive($('ctlRow'), Math.max(0, ctlName.indexOf(ctl[activeSpatialStem])));
+  renderPhonePick();
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
   setSegActive(blendModeRow, st.blendMode);
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
@@ -2793,8 +2816,20 @@ setInterval(syncSources, 1000);
   // its own stems (`stems`, null = every stem set to Phone) and its own turn baseline (`last`),
   // so two phones never feed each other's deltas into the same stem.
   let host = new SSPair.Host();
-  const phones = [];
+  const phones = phoneHub.phones;
   let phoneSeq = 0;
+  // A stem belongs to one phone at most; a phone with no stems of its own moves the stems nobody claimed.
+  const claimedByOther = (stem, p) => phones.some((q) => q !== p && q.stems && q.stems.includes(stem));
+  const stemsOf = (p) => p.stems || ALL_STEMS.filter((s) => !claimedByOther(s, p));
+  function assignStem(stem, target) {
+    for (const q of phones) {
+      const has = !!(q.stems && q.stems.includes(stem));
+      if (q === target) { if (!has) assignTo(q, [...(q.stems || []), stem]); }
+      else if (has) assignTo(q, q.stems.filter((s) => s !== stem));
+    }
+    renderPhones();
+  }
+  phoneHub.assignStem = assignStem;
   const btn = $('pairBtn'), box = $('pairBox'), offerEl = $('pairOffer'), answerEl = $('pairAnswer'), st = $('pairStatus');
   const phonesBox = $('phonesBox'), phonesList = $('phonesList');
   const say = (t) => { st.textContent = t; };
@@ -2825,16 +2860,13 @@ setInterval(syncSources, 1000);
         const b = document.createElement('button');
         b.className = 'seg-btn' + (p.stems && p.stems.includes(stem) ? ' active' : '');
         b.textContent = stemTitle(stem);
-        b.addEventListener('click', () => {
-          const set = new Set(p.stems || []);
-          if (set.has(stem)) set.delete(stem); else set.add(stem);
-          assignTo(p, [...set]);
-        });
+        b.addEventListener('click', () => assignStem(stem, p.stems && p.stems.includes(stem) ? null : p));
         chips.appendChild(b);
       }
       row.appendChild(chips);
       phonesList.appendChild(row);
     }
+    renderPhonePick();
   }
   function forget(p) { const i = phones.indexOf(p); if (i >= 0) phones.splice(i, 1); live(); }
   // The stems list changes as stems are added or removed: keep the chips current.
@@ -2855,13 +2887,13 @@ setInterval(syncSources, 1000);
       if (m.t === 'turn' && Number.isFinite(m.v)) {
         const d = m.v - p.last; p.last = m.v;
         if (!d) return;
-        rotateArmedBy(d, 'phone', p.stems);
+        rotateArmedBy(d, 'phone', stemsOf(p));
         val.textContent = Math.round(m.v) + '°';
         refreshCards(); requestRadar();
       }
       else if (m.t === 'zero') {
         p.last = 0;
-        if (p.stems) { for (const s of p.stems) placeStem(s, 0); buzz(50); }
+        if (p.stems || phones.length > 1) { for (const s of stemsOf(p)) placeStem(s, 0); buzz(50); }
         else calibrateBtn.click();
       }
       else if (m.t === 'hello') {
