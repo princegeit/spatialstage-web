@@ -64,6 +64,7 @@
     <div class="row"><button id="zeroBtn">Zero / centre all</button><button id="dimBtn">Dim screen</button></div>
     <div class="seg" id="invertRow"><button data-v="0">Turn: normal</button><button data-v="1">Turn: inverted</button></div>
     <div class="seg" id="modeRow"><button data-v="1">Compass</button><button data-v="0">Gyro</button></div>
+    <input id="userName2" maxlength="30" placeholder="This device name" autocomplete="off" aria-label="This device name" style="width:100%;background:#1c1c1c;color:#eee;border:1px solid rgba(255,255,255,0.2);border-radius:10px;padding:12px;font-size:1rem;margin-top:10px">
     <div id="assigned" class="hint">Steering: every stem set to Phone</div>
     <div class="hint" id="note"></div>
   </div>
@@ -117,6 +118,12 @@ function deviceName() {
   return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : (/Android[^;]*;\s*([^;)]+)/.exec(ua) || [])[1] || 'Phone';
 }
 try { $('userName').value = localStorage.getItem('userName') || ''; } catch (e) {}
+// One name, two boxes (the pairing screen and the controls): editing either renames the device on the PC.
+$('userName2').value = $('userName').value;
+for (const [a, b] of [['userName', 'userName2'], ['userName2', 'userName']]) {
+  $(a).addEventListener('input', () => { $(b).value = $(a).value; });
+  $(a).addEventListener('change', () => { if (guest.connected) guest.send({ t: 'hello', app: native, name: deviceName() }); });
+}
 guest.onMessage = (m) => {
   if (m.t === 'hello') $('note').textContent = 'The PC page is listening.';
   else if (m.t === 'assign') $('assigned').textContent = 'Steering: ' + (m.stems && m.stems.length ? m.stems.join(', ').toUpperCase() : 'every stem set to Phone');
