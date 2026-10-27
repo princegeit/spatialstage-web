@@ -659,16 +659,16 @@ spatialBaseEl.addEventListener('input', () => {
   placeStem(stem, Number(spatialBaseEl.value));
 });
 
-// The PHONE / CAM / SPATIAL buttons on a stem card each open that stem's menu for that one mode:
-// the stem is set to it and only its settings show. Tapping the same button again closes the menu.
+// The PHONE / CAM / SPATIAL buttons on a stem card each open that stem's menu for that one mode,
+// showing only its settings, and turn the mode on. Pressing the same button again while its menu is
+// open switches the mode off (or back on) without closing the menu; the menu's x closes it.
 const MODE_LABEL = { phone: 'PHONE', cam: 'CAMERA', spatial: 'SPATIAL' };
 function openMotion(stem, mode) {
-  if (activeSpatialStem === stem && panelMode === mode) { openSpatialPanel(stem); return; }
+  const showing = activeSpatialStem === stem && panelMode === mode;
   panelMode = mode;
-  setControl(stem, mode);
+  setControl(stem, showing && ctl[stem] === mode ? null : mode);
   if (activeSpatialStem !== stem) openSpatialPanel(stem); else refreshSpatialPanel();
 }
-
 function openSpatialPanel(stem) {
   activeSpatialStem = (activeSpatialStem === stem) ? null : stem;
   spatialPanel.hidden = activeSpatialStem === null;
@@ -703,7 +703,7 @@ function refreshSpatialRows() {
   const st = spatial[activeSpatialStem];
   syncControl(activeSpatialStem);
   setSegActive($('ctlRow'), Math.max(0, ctlName.indexOf(ctl[activeSpatialStem])));
-  spatialStemName.textContent = stemTitle(activeSpatialStem) + ' · ' + MODE_LABEL[panelMode];
+  spatialStemName.textContent = stemTitle(activeSpatialStem) + ' · ' + MODE_LABEL[panelMode] + (ctl[activeSpatialStem] === panelMode ? '' : ' (off)');
   renderPhonePick();
   for (const [id, mode] of [['secPhone', 'phone'], ['secCam', 'cam'], ['secSpatial', 'spatial']]) document.getElementById(id).hidden = panelMode !== mode;
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
