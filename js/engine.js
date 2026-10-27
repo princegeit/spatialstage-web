@@ -30,6 +30,7 @@
   const BRANCH_GAIN = 0.5;  // stereo build's per-branch gain, matches level with the mono build
   const ENV_FRAME = 2048, ENV_HOP = 512, ENV_POINTS = 1000; // precompute_fft_envelope.py
   const SPEAKERS = [-45, 45, -135, 135];   // quad_pan.pd: FL, FR, RL, RR
+  const SYSTEM_AUDIO = '__system__';        // setLive deviceId for "what the screen or a tab is playing"
 
   const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
   const quadGain = (angle, speaker) => Math.cos(Math.min(Math.abs(wrap180(angle - speaker)), 90) * Math.PI / 180);
@@ -46,6 +47,7 @@
       this.volume = {}; this.muted = {};
       for (const s of stems) { this.volume[s] = 1; this.muted[s] = false; }
       this.masterVolume = 0.4;
+      this.leak = 0;                       // 0..1: how much of every stem also reaches every speaker equally
       this.song = null;                    // { name, buffers: {stem: AudioBuffer}, duration, envelopes: {stem: Float32Array} }
       this.sources = null;
       this.playing = false;
@@ -53,6 +55,8 @@
       this.onEnded = null;
       this.onStateChange = null;
       this.recorder = null;
+      this.live = {};                      // stem -> { deviceId, pair, gain } of a live input in use
+      this.inputs = new Map();             // deviceId -> { stream, source, splitter, channels }
       this.azimuth = {};
       for (const s of stems) this.azimuth[s] = geometry[s].azimuth;
     }
@@ -115,8 +119,20 @@
     _buildStem(stem) {
       const ctx = this.ctx;
       const n = { input: ctx.createGain(), split: ctx.createChannelSplitter(2), out: ctx.createGain(), chains: [] };
+      // Live input (setLive) joins the stem's file audio here: this gain node is summed into n.input.
+      n.liveGain = ctx.createGain(); n.liveGain.gain.value = 0;
+      n.liveGain.channelCount = 2; n.liveGain.channelCountMode = 'explicit';
+      n.liveGain.connect(n.input);
       n.input.channelCount = 2; n.input.channelCountMode = 'explicit';
-      n.input.connect(n.split);
+      // Distance stage (sound events, js/events.js): Doppler delay -> low-pass -> gain, before the
+      // panners so every output (classic, HRTF, quad) hears it - the Pd rig's spatial/dist-cue. At
+      // rest it is no delay, 20 kHz and unity. The analysis taps below stay before it, so a stem
+      // that an event pushes away does not then measure itself as quieter.
+      n.dop = ctx.createDelay(0.5); n.dop.delayTime.value = 0;
+      n.distLp = ctx.createBiquadFilter(); n.distLp.type = 'lowpass'; n.distLp.frequency.value = 20000; n.distLp.Q.value = 0.707;
+      n.distGain = ctx.createGain(); n.distGain.gain.value = 1;
+      n.input.connect(n.dop); n.dop.connect(n.distLp); n.distLp.connect(n.distGain); n.distGain.connect(n.split);
+      n.dist = { gain: 1, cutoff: 20000, delayMs: 0 };
       // Level: BRANCH_GAIN * volume * (muted ? 0 : 1), ramped like Pd's line~ 20 ms.
       n.out.gain.value = BRANCH_GAIN;
       n.out.connect(this.master);
@@ -138,9 +154,30 @@
       n.bp = ctx.createBiquadFilter(); n.bp.type = 'bandpass'; n.bp.frequency.value = 1000; n.bp.Q.value = 4;
       n.bandAnalyser = ctx.createAnalyser(); n.bandAnalyser.fftSize = 1024; n.bandAnalyser.smoothingTimeConstant = 0;
       n.mono.connect(n.bp); n.bp.connect(n.bandAnalyser);
+      // Sound events (js/events.js) read three levels per stem: the mono mix and the same through a
+      // 3 kHz high-pass and a 200 Hz low-pass - the Pd rig's [hip~ 3000]x2 / [lop~ 200]x2 -> env~.
+      n.hiF = ctx.createBiquadFilter(); n.hiF.type = 'highpass'; n.hiF.frequency.value = 3000;
+      n.loF = ctx.createBiquadFilter(); n.loF.type = 'lowpass'; n.loF.frequency.value = 200;
+      n.hiAnalyser = ctx.createAnalyser(); n.hiAnalyser.fftSize = 2048; n.hiAnalyser.smoothingTimeConstant = 0;
+      n.loAnalyser = ctx.createAnalyser(); n.loAnalyser.fftSize = 2048; n.loAnalyser.smoothingTimeConstant = 0;
+      n.mono.connect(n.hiF); n.hiF.connect(n.hiAnalyser);
+      n.mono.connect(n.loF); n.loF.connect(n.loAnalyser);
 
+      // Leak (setLeak): the panned stem passes through n.dry (1 - leak); the leak path sums the stem's
+      // two channels to mono and feeds every output equally (0.707 per ear, like a centred source), the
+      // rig's spatial leak bus. Quad: the panner gains are scaled by (1 - leak) in _applyQuad and the
+      // mono feed goes into all four speaker inputs of n.qmerge.
+      n.dry = ctx.createGain(); n.dry.gain.value = 1 - this.leak;
+      n.dry.connect(n.out);
+      n.leakIn = ctx.createGain(); n.leakIn.channelCount = 1; n.leakIn.channelCountMode = 'explicit';
+      n.split.connect(n.leakIn, 0); n.split.connect(n.leakIn, 1);
+      n.leakSt = ctx.createGain(); n.leakSt.gain.value = this.leak * Math.SQRT1_2;
+      n.leakIn.connect(n.leakSt); n.leakSt.connect(n.out);
+      n.leakQ = ctx.createGain(); n.leakQ.gain.value = this.leak * Math.SQRT1_2;
+      n.leakIn.connect(n.leakQ);
+      for (let k = 0; k < 4; k++) n.leakQ.connect(n.qmerge, 0, k);
       const merger = ctx.createChannelMerger(2);
-      merger.connect(n.out);
+      merger.connect(n.dry);
       for (let c = 0; c < 2; c++) {
         const ch = {};
         // --- Pd-match chain: two delays + two gains ---
@@ -156,7 +193,7 @@
         ch.panner = ctx.createPanner();
         ch.panner.panningModel = 'HRTF'; ch.panner.distanceModel = 'inverse';
         ch.panner.refDistance = 1; ch.panner.rolloffFactor = 0;
-        ch.hrtfIn.connect(ch.panner); ch.panner.connect(n.out);
+        ch.hrtfIn.connect(ch.panner); ch.panner.connect(n.dry);
         // Mode select is just which input gain is open.
         ch.pdIn.gain.value = this.panMode === 'pd' ? 1 : 0;
         ch.hrtfIn.gain.value = this.panMode === 'hrtf' ? 1 : 0;
@@ -178,6 +215,21 @@
       for (const s of this.stems) for (const ch of this.nodes[s].chains) {
         ch.pdIn.gain.setTargetAtTime(mode === 'pd' ? 1 : 0, t, 0.02);
         ch.hrtfIn.gain.setTargetAtTime(mode === 'hrtf' ? 1 : 0, t, 0.02);
+      }
+    }
+
+    // Leak 0..1 (the rig's address 37): every stem also plays equally from every speaker, v of the
+    // way (0 = purely panned, 1 = every speaker hears the same mono mix of the stems).
+    setLeak(v) {
+      this.leak = Math.max(0, Math.min(1, Number(v) || 0));
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime;
+      for (const s of this.stems) {
+        const n = this.nodes[s];
+        n.dry.gain.setTargetAtTime(1 - this.leak, t, 0.02);
+        n.leakSt.gain.setTargetAtTime(this.leak * Math.SQRT1_2, t, 0.02);
+        n.leakQ.gain.setTargetAtTime(this.leak * Math.SQRT1_2, t, 0.02);
+        this._applyQuad(s, this.azimuth[s], false);
       }
     }
 
@@ -255,7 +307,7 @@
       for (let c = 0; c < 2; c++) {
         const angle = deg + (c === 0 ? -w / 2 : w / 2);
         n.chains[c].quad.forEach((q, k) => {
-          const v = quadGain(angle, SPEAKERS[k]);
+          const v = quadGain(angle, SPEAKERS[k]) * (1 - this.leak);
           if (immediate) q.gain.value = v; else q.gain.setTargetAtTime(v, t, RAMP_TAU);
         });
       }
@@ -265,7 +317,7 @@
     // as env~ reports it: dB with 100 = full scale, 0 for silence.
     envDb(stem) {
       const n = this.nodes[stem];
-      if (!n || !this.playing) return 0;
+      if (!n || !(this.playing || this.live[stem])) return 0;
       if (!this._meterBuf) this._meterBuf = new Float32Array(n.analyser.fftSize);
       n.analyser.getFloatTimeDomainData(this._meterBuf);
       // The analyser window is oldest-first; the newest 512 samples are the tail.
@@ -273,6 +325,34 @@
       let e = 0;
       for (let i = from; i < b.length; i++) e += b[i] * b[i];
       return Math.max(0, 100 + 20 * Math.log10(Math.sqrt(e / 512) + 1e-9));
+    }
+
+    // The three readings the sound-event detector uses, env~ dB over the newest 2048 samples (about
+    // the rig's env~ 4096 window with its half-window hop): { level, hi, lo }, or null when silent
+    // (stopped, nothing live).
+    featuresOf(stem) {
+      const n = this.nodes[stem];
+      if (!n || !(this.playing || this.live[stem])) return null;
+      if (!this._featBuf) this._featBuf = new Float32Array(2048);
+      const b = this._featBuf;
+      const db = (an) => {
+        an.getFloatTimeDomainData(b);
+        let e = 0;
+        for (let i = 0; i < b.length; i++) e += b[i] * b[i];
+        return Math.max(0, 100 + 20 * Math.log10(Math.sqrt(e / b.length) + 1e-9));
+      };
+      return { level: db(n.analyser), hi: db(n.hiAnalyser), lo: db(n.loAnalyser) };
+    }
+
+    // Distance cues from js/events.js: { gain, cutoff (Hz), delayMs }. Glided (Doppler a little
+    // slower, so a changing distance bends the pitch instead of stepping it).
+    setDistance(stem, cue) {
+      const n = this.nodes[stem];
+      if (!n || !this.ctx) return;
+      const d = n.dist, t = this.ctx.currentTime;
+      if (Math.abs(cue.gain - d.gain) > 0.002) { n.distGain.gain.setTargetAtTime(cue.gain, t, 0.03); d.gain = cue.gain; }
+      if (Math.abs(cue.cutoff - d.cutoff) > 5) { n.distLp.frequency.setTargetAtTime(cue.cutoff, t, 0.03); d.cutoff = cue.cutoff; }
+      if (Math.abs(cue.delayMs - d.delayMs) > 0.01) { n.dop.delayTime.setTargetAtTime(Math.min(480, cue.delayMs) / 1000, t, 0.05); d.delayMs = cue.delayMs; }
     }
 
     // 0..1 meter value for the UI: envDb on a -60..0 dB scale, times the
@@ -321,7 +401,7 @@
       // Envelopes are filled in by envelopeOf() the first time precalc mode
       // asks for one - most songs never use it, and computing them all up
       // front cost a noticeable pause on every load.
-      this.song = { name: song.name, buffers, duration, envelopes: {}, curves: {} };
+      this.song = { name: song.name, buffers, duration, envelopes: {}, curves: {}, beats: null };
       this.offset = 0;
       this._changed();
       return this.song;
@@ -349,6 +429,7 @@
       song.buffers[stem] = buf;
       delete song.envelopes[stem];
       for (const k of Object.keys(song.curves)) if (k.endsWith(':' + stem)) delete song.curves[k];
+      song.beats = null;   // re-analysed the next time Beat steps asks
       song.duration = Math.max(song.duration, buf.duration);
       if (this.playing && this.sources) {
         const old = this.sources[stem];
@@ -392,6 +473,150 @@
         song.curves[key] = kind === 'balance' ? SSCurves.balance(L, R) : SSCurves.sections(L, R, buf.sampleRate).curve;
       }
       return song.curves[key];
+    }
+
+    // Beat steps (beats.js): { status: 'analysing' | 'ready' | 'error', progress, data }, started
+    // the first time a stem in that mode asks and kept for the song. Done in the page, stem by
+    // stem with a pause between slices so playback and the UI stay smooth; a song takes a few
+    // seconds. data is the shape the rig's .beats.json has: { stems, song }.
+    beatsOf() {
+      const song = this.song;
+      if (!song) return null;
+      if (!song.beats) {
+        song.beats = { status: 'analysing', progress: 0, data: null, message: '' };
+        this._analyseBeats(song, song.beats);
+      }
+      return song.beats;
+    }
+
+    async _analyseBeats(song, entry) {
+      const pause = () => new Promise((r) => setTimeout(r, 0));
+      try {
+        const names = this.stems.filter((s) => song.buffers[s]);
+        if (!names.length) throw new Error('no stems loaded');
+        const CH = 1 << 17, mono = new Float32Array(CH), onsets = [];
+        for (let si = 0; si < names.length; si++) {
+          const buf = song.buffers[names[si]];
+          const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+          const o = new SSBeats.OnsetEnvelope(buf.sampleRate);
+          for (let off = 0; off < L.length; off += CH) {
+            const m = Math.min(CH, L.length - off);
+            for (let i = 0; i < m; i++) mono[i] = (L[off + i] + R[off + i]) * 0.5;
+            o.push(mono.subarray(0, m));
+            if (((off / CH) & 3) === 3) {
+              entry.progress = Math.round(100 * (si + off / L.length) / names.length);
+              this._changed();
+              await pause();
+              if (this.song !== song || song.beats !== entry) return;   // another song, or a stem was swapped
+            }
+          }
+          onsets.push(o);
+          await pause();
+        }
+        entry.data = SSBeats.describeSong(onsets, names);
+        entry.status = 'ready';
+      } catch (e) {
+        entry.status = 'error'; entry.message = e.message || String(e);
+      }
+      entry.progress = 100;
+      this._changed();
+    }
+
+    /* ---------------- live input ---------------- */
+
+    // A sound input (microphone, line-in, a virtual cable, a USB interface) added to a stem, on top of
+    // whatever the stem's file plays - the web app's version of the rig's EXT option (address 100+i).
+    // deviceId '' is the browser's default input; pair 0 switches it off, 1..4 = the device's channels
+    // 1-2 ... 7-8 (a mono device feeds both sides). Echo cancellation, noise suppression and automatic
+    // gain are off: they are made for calls and would mangle music. Needs a tap/click (permission).
+    // Resolves with { channels } of the device, or throws (permission refused, no such device).
+    async setLive(stem, { deviceId = '', pair = 0, gain = 1 } = {}) {
+      await this.ensure();
+      const n = this.nodes[stem];
+      if (!n) throw new Error('no such stem: ' + stem);
+      const old = this.live[stem];
+      if (old && old.merger) { try { old.merger.disconnect(); } catch (e) {} }
+      if (!pair) {
+        n.liveGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.01);
+        delete this.live[stem];
+        this._releaseInput(old && old.deviceId);
+        this._changed();
+        return { channels: 0 };
+      }
+      const input = await this._openInput(deviceId);
+      const merger = this.ctx.createChannelMerger(2);
+      const left = 2 * (pair - 1), right = left + 1;
+      const have = input.channels;
+      const l = left < have ? left : 0;                     // a pair the device does not have: its first channel
+      const r = right < have ? right : (left < have ? left : 0);   // a mono device (or odd count) feeds both sides
+      input.splitter.connect(merger, l, 0);
+      input.splitter.connect(merger, r, 1);
+      merger.connect(n.liveGain);
+      n.liveGain.gain.setTargetAtTime(Math.max(0, Math.min(2, gain)), this.ctx.currentTime, 0.01);
+      this.live[stem] = { deviceId, pair, gain, merger };
+      if (old && old.deviceId !== deviceId) this._releaseInput(old.deviceId);
+      this._changed();
+      return { channels: have };
+    }
+
+    get systemAudioId() { return SYSTEM_AUDIO; }
+
+    setLiveGain(stem, gain) {
+      const l = this.live[stem];
+      if (!l) return;
+      l.gain = gain;
+      this.nodes[stem].liveGain.gain.setTargetAtTime(Math.max(0, Math.min(2, gain)), this.ctx.currentTime, 0.01);
+    }
+
+    async _openInput(deviceId) {
+      let e = this.inputs.get(deviceId);
+      if (e && e.stream.getAudioTracks().some((t) => t.readyState === 'live')) return e;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('this browser cannot open audio inputs here (it needs https:// or localhost)');
+
+      const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 8 } };
+      if (deviceId && deviceId !== SYSTEM_AUDIO) audio.deviceId = { exact: deviceId };
+      let stream;
+      if (deviceId === SYSTEM_AUDIO) {
+        // Whatever a screen or a browser tab is playing (Ableton, a media player, another page): the
+        // browser's own "share" picker, audio only is kept. Chrome and Edge: tick "Share system audio" (entire
+        // screen) or "Share tab audio".
+        if (!navigator.mediaDevices.getDisplayMedia) throw new Error('this browser cannot capture system or tab audio');
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+        stream.getVideoTracks().forEach((t) => t.stop());
+        if (!stream.getAudioTracks().length) {
+          stream.getTracks().forEach((t) => t.stop());
+          throw new Error('no audio was shared - pick a screen with "Share system audio", or a tab with "Share tab audio"');
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ audio });
+      }
+      const track = stream.getAudioTracks()[0];
+      const channels = Math.max(1, (track && track.getSettings().channelCount) || 2);
+      const source = this.ctx.createMediaStreamSource(stream);
+      const splitter = this.ctx.createChannelSplitter(Math.max(2, Math.min(32, channels)));
+      source.connect(splitter);
+      e = { stream, source, splitter, channels };
+      this.inputs.set(deviceId, e);
+      return e;
+    }
+
+    // Close a device once no stem uses it any more.
+    _releaseInput(deviceId) {
+      if (deviceId === undefined || deviceId === null) return;
+      if (Object.values(this.live).some((l) => l.deviceId === deviceId)) return;
+      const e = this.inputs.get(deviceId);
+      if (!e) return;
+      try { e.source.disconnect(); } catch (err) {}
+      e.stream.getTracks().forEach((t) => t.stop());
+      this.inputs.delete(deviceId);
+    }
+
+    // The audio inputs the browser can see: [{ deviceId, label }]. Labels are empty until the page
+    // has been given permission once (a call to setLive).
+    async inputDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
+      const all = await navigator.mediaDevices.enumerateDevices();
+      return all.filter((d) => d.kind === 'audioinput').map((d, i) => ({ deviceId: d.deviceId, label: d.label || ('Input ' + (i + 1)) }));
     }
 
     /* ---------------- transport ---------------- */

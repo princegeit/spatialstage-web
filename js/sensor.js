@@ -113,6 +113,14 @@
     _event(e) {
       if (e.alpha === null && typeof e.webkitCompassHeading !== 'number') return;
       this._raw = this.headingOf(e);
+      this._advance(e);
+    }
+
+    // A heading (degrees, clockwise) from somewhere other than this page's own sensor events -
+    // the Android app's background service, which keeps reading with the screen off.
+    feedHeading(h) { this._raw = ((Number(h) % 360) + 360) % 360; this._advance(null); }
+
+    _advance(e) {
       if (this._last !== null) this._unwrapped += wrap180(this._raw - this._last);
       this._last = this._raw;
       // The first reading is the zero: stems must not jump to wherever the
@@ -131,7 +139,7 @@
           h.t = now; h.n = 0;
           const cal = this.calStart !== null ? ' · calibrating: ' + Math.round(this._unwrapped - this.calStart) + '°' : '';
           this.onReading('sensor ' + (h.hz || '?') + ' Hz · gyro ' + (this.gyroPresent === null ? '?' : this.gyroPresent ? 'yes' : 'NO') +
-            (e.absolute || (this.useAbsolute && typeof e.webkitCompassHeading === 'number') ? ' · compass' : ' · gyro') +
+            (e && (e.absolute || (this.useAbsolute && typeof e.webkitCompassHeading === 'number')) || (!e && this.useAbsolute) ? ' · compass' : ' · gyro') +
             ' · heading ' + Math.round(this._raw) + '°, turn ' + Math.round(turn) + '°' + cal);
         }
       }

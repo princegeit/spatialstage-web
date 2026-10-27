@@ -70,8 +70,68 @@
     }).catch(() => {});
   }
 
+  // ---- Beat steps (fftMode 6): ports of bridge/server.js's beatAzTick helpers ----
+  const BEAT_GATE_LEVEL = 45;          // source quieter than this (env~ dB): hold the last position
+  const BEAT_LEAD_MS = 25;             // one motion tick (the rig's is 10 ms + OSC hop): the Nudge fine-tunes it
+  const BEAT_SENSE = [2.0, 1.2, 0.7];  // peak strength needed per beatSense: hits only / normal / everything
+  const BEAT_PARAMS = {
+    beatSrc: (v, n) => Number.isInteger(v) && v >= 0 && v <= n,
+    beatEvery: (v) => [1, 2, 4, 8].includes(v),
+    beatSteps: (v) => [2, 3, 4, 6, 8].includes(v),
+    beatPattern: (v) => [0, 1, 2, 3].includes(v),
+    beatNudge: (v) => Number.isFinite(v) && v >= -200 && v <= 200,
+    beatFollow: (v) => v === 0 || v === 1,
+    beatSense: (v) => [0, 1, 2].includes(v),
+  };
+  function peakTimes(src, sense) {
+    if (!src._peaks) src._peaks = [];
+    if (!src._peaks[sense]) {
+      const { t, s } = src.peaks || { t: [], s: [] };
+      src._peaks[sense] = t.filter((_, i) => s[i] >= BEAT_SENSE[sense]);
+    }
+    return src._peaks[sense];
+  }
+  function mulberry32(a) {
+    return () => {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  // Shuffled order: random, never the same position twice running; built forwards and kept.
+  const shuffleCache = new Map();
+  function shuffleIndex(step, steps, seed) {
+    const key = steps + ':' + seed;
+    let e = shuffleCache.get(key);
+    if (!e) { e = { seq: [], rnd: mulberry32(seed * 7919 + steps) }; shuffleCache.set(key, e); }
+    while (e.seq.length <= step) {
+      const prev = e.seq.length ? e.seq[e.seq.length - 1] : -1;
+      let v = Math.floor(e.rnd() * steps);
+      if (v === prev) v = (v + 1 + Math.floor(e.rnd() * (steps - 1))) % steps;
+      e.seq.push(v);
+    }
+    return e.seq[step];
+  }
+  function patternIndex(pattern, step, steps, seed) {
+    if (pattern === 1) return ((-step % steps) + steps) % steps;
+    if (pattern === 2) { const period = 2 * steps - 2, m = step % period; return m < steps ? m : period - m; }
+    if (pattern === 3) return shuffleIndex(step, steps, seed);
+    return step % steps;
+  }
+  // Evenly spaced; two and four are offset half a step (left/right, the four speakers).
+  function stepAzimuth(index, steps) {
+    const offset = (steps === 2 || steps === 4) ? 180 / steps : 0;
+    return wrap180(offset + index * 360 / steps);
+  }
+  function lastBeatAtOrBefore(beats, t) {   // index of the last beat at or before t, -1 before the first
+    let lo = 0, hi = beats.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (beats[mid] <= t) lo = mid + 1; else hi = mid; }
+    return lo - 1;
+  }
+
   class StemMotion {
-    constructor(stem, index) {
+    constructor(stem, index, stemCount) {
       this.stem = stem; this.index = index;
       // Same fields, same defaults, as bridge/server.js's spatialState and
       // the UI's spatial{} mirror - a preset file round-trips unchanged.
@@ -82,7 +142,15 @@
         // 0 fixed; 1 louder = snappier, 2 louder = smoother - the bridge's
         // updateLevelSmoothing, done here per tick from the stem's own level.
         smoothingMode: 0,
+        // Beat steps; beatSrc = stemCount is the whole mix. Same fields as the rig.
+        beatSrc: stemCount, beatEvery: 1, beatSteps: 4, beatPattern: 0, beatNudge: 0, beatFollow: 0, beatSense: 1,
       };
+      // Sound events (js/events.js): evOn, evTypes, evMode, evAim, evCurve, evSpeed, evSense, evCues, evRoom.
+      Object.assign(this.params, SSEvents.DEFAULTS);
+      this.events = new SSEvents.EventLayer(index);
+      this.ev = null;          // the layer's last output while it is doing anything, for the UI
+      this.evRate = 1;         // Modulate: how much faster the preset motion runs right now
+      this.stemCount = stemCount;
       this.smoothingNow = 1;   // the k actually in use, for the panel's hint
       this.phone = 0;          // degrees, relative to the stem's base (the UI's "rotate")
       this.armed = true;
@@ -96,10 +164,19 @@
       this.onsetAvg = 0; this.lastOnsetAt = 0;
       this.tickCount = 0;
       this.out = 0;            // last output offset (degrees, pre-base)
+      this.motionOut = 0;      // the blended, smoothed motion before base is added - placing a stem works back from it
       this.effective = 0;      // absolute azimuth sent to the engine
     }
 
     set(param, value) {
+      if (BEAT_PARAMS[param] && !BEAT_PARAMS[param](value, this.stemCount)) return;
+      if (SSEvents.PARAMS[param]) {
+        const v = SSEvents.clean(param, value);
+        if (v === undefined) return;
+        this.params[param] = v;
+        if (param === 'evOn' && v === 0) this.events.det.reset();
+        return;
+      }
       if (Array.isArray(value)) this.params[param] = value.slice();
       else this.params[param] = value;
       if (param === 'smoothing' || param === 'smoothingMode') {
@@ -139,7 +216,7 @@
       // source 2 (Link) is a stub on both rigs: falls back to manual.
 
       // --- preset-source ---
-      const rate = p.presetMode >= 1.5 ? (bpm / 60) / this.presetBeats : p.presetRate;
+      const rate = (p.presetMode >= 1.5 ? (bpm / 60) / this.presetBeats : p.presetRate) * this.evRate;
       this.presetPhase = (this.presetPhase + rate * dt) % 1;
       let presetAz;
       if (p.presetMode >= 0.5 && p.presetMode < 1.5) {
@@ -161,6 +238,10 @@
           this.fftAz = this.onsetAz;
         } else if (p.fftMode < 2.5) {
           this.fftAz = this.bandSmooth.tick(this._bandLevel(nodes.bandAnalyser));
+        } else if (p.fftMode >= 5.5) {
+          // 6 Beat steps: hop to the next position on each beat of the chosen source.
+          const v = this._beatStep(engine, motion);
+          if (v !== null) this.fftAz = v;
         } else if (p.fftMode >= 3.5) {
           // 4 Follow = the stem's own stereo position, 5 Sections = a spot
           // per section of the song (both from js/curves.js).
@@ -197,6 +278,7 @@
       // glides from centre rather than jumping.
       const smoothed = this.finalSmooth.tick(blended);
       if (this.armed) {
+        this.motionOut = smoothed;
         this.out = wrap180(smoothed + p.base);
         this.effective = wrap180(geometryBase + this.out);
       } else {
@@ -207,7 +289,56 @@
         this.out = wrap180(-geometryBase);
         this.effective = 0;
       }
+      this._events(dt, engine, geometryBase);
       engine.setAzimuth(this.stem, this.effective);
+    }
+
+    // Sound events on top of everything above: the layer reads the stem's
+    // own audio, and while it is doing something it moves the stem
+    // (Override / Offset), speeds up its preset motion (Modulate) and sets
+    // its distance cues. bridge/server.js's eventsTick does the same for Pd.
+    _events(dt, engine, geometryBase) {
+      const p = this.params, L = this.events;
+      const active = this.armed && p.evOn === 1;
+      if (!active && !L.beh && L.w === 0) {
+        if (this.ev) { this.ev = null; this.evRate = 1; engine.setDistance(this.stem, { gain: 1, cutoff: 20000, delayMs: 0 }); }
+        return;
+      }
+      const f = active ? engine.featuresOf(this.stem) : null;
+      const o = L.tick(dt, {
+        p, stemAz: this.effective, phoneAz: this.phoneAz(geometryBase), active,
+        frame: f && { t: performance.now() / 1000, level: f.level, hi: f.hi, lo: f.lo },
+      });
+      this.ev = o;
+      this.evRate = o.rate;
+      this.effective = o.az;
+      engine.setDistance(this.stem, o.cues);
+    }
+
+    // Where this stem's phone is pointing, as an absolute direction.
+    phoneAz(geometryBase) { return wrap180(geometryBase + this.params.base + this.phone); }
+
+    // A test event from the panel, whether or not anything was heard.
+    fireEvent(type, geometryBase) {
+      this.events.fire(type, 0.8, { p: this.params, stemAz: this.effective, phoneAz: this.phoneAz(geometryBase) }, true);
+    }
+
+    // The azimuth for the beat the song is on now, or null to hold the last one
+    // (still analysing, or the source is silent right now).
+    _beatStep(engine, motion) {
+      const p = this.params;
+      const entry = engine.beatsOf();
+      if (!entry || entry.status !== 'ready') return null;
+      const mix = p.beatSrc >= this.stemCount;
+      const srcStem = mix ? null : engine.stems[p.beatSrc];
+      const level = mix ? motion.songLevel() : engine.envDb(srcStem);
+      if (level < BEAT_GATE_LEVEL) return null;
+      const src = mix ? entry.data.song : entry.data.stems[srcStem];
+      const times = !src ? [] : p.beatFollow === 1 ? peakTimes(src, p.beatSense) : src.beats;
+      if (!times.length) return 0;   // no steady beat (or no audio): sit still
+      const i = lastBeatAtOrBefore(times, engine.position() + (BEAT_LEAD_MS + p.beatNudge) / 1000);
+      const step = Math.floor(Math.max(i, 0) / p.beatEvery);
+      return stepAzimuth(patternIndex(p.beatPattern, step, p.beatSteps, this.index), p.beatSteps);
     }
 
     // sigmund~ pitch stand-in: normalized autocorrelation over 1024 samples,
@@ -275,7 +406,7 @@
       this.engine = engine;
       this.stems = {};
       engine.stems.forEach((s, i) => {
-        this.stems[s] = new StemMotion(s, i);
+        this.stems[s] = new StemMotion(s, i, engine.stems.length);
         // Until the first tick, show each stem at its home position rather
         // than piled up at 0 deg.
         this.stems[s].effective = engine.geometry[s].azimuth;
@@ -292,12 +423,23 @@
       const now = performance.now();
       const dt = Math.min(0.25, (now - this.lastAt) / 1000);
       this.lastAt = now;
+      this._songLevel = null;
       for (const s of this.engine.stems) {
         this.stems[s].tick(dt, this.engine, this.engine.geometry[s].azimuth, this);
       }
       if (this.onTick) this.onTick();
     }
+    // Loudest stem right now, read once per tick however many stems use the whole mix as their beat.
+    songLevel() {
+      if (this._songLevel === null || this._songLevel === undefined) {
+        let m = 0;
+        for (const s of this.engine.stems) m = Math.max(m, this.engine.envDb(s));
+        this._songLevel = m;
+      }
+      return this._songLevel;
+    }
     setPhone(stem, rotateDeg) { this.stems[stem].phone = rotateDeg; }
+    fireEvent(stem, type) { this.stems[stem].fireEvent(type, this.engine.geometry[stem].azimuth); }
     setArmed(stem, on) { this.stems[stem].armed = !!on; }
     setParam(stem, param, value) {
       this.stems[stem].set(param, value);
@@ -314,5 +456,6 @@
     get midiClock() { return midiClock; }
   }
 
+  Motion.peakTimes = peakTimes;   // for the panel's hint
   window.SSMotion = Motion;
 })();

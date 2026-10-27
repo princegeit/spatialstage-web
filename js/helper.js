@@ -75,6 +75,8 @@
     // Helper 1.1+: drum kit parts for a song it has split, and the LED relay.
     supports(feature) { return !!this.info && Array.isArray(this.info.features) && this.info.features.includes(feature); },
     startParts: (id) => json('/songs/' + id + '/parts', { method: 'POST' }, 30000),
+    // Helper 1.2+: WLED controllers on the local network.
+    scanWled: () => json('/wled/scan', {}, 20000).then(r => r.found || []),
     // One WLED packet, passed on as UDP by the helper. No JSON back (204).
     async led(frame, host, port) {
       const r = await call('/led?host=' + encodeURIComponent(host) + '&port=' + (port || 21324),

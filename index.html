@@ -105,6 +105,21 @@
   .weight-row input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
   .weight-row output { font-size: 0.64rem; color: #ccc; width: 34px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
   #spatialBpm { width: 70px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.8rem; }
+  /* --- sound events (js/events.js) --- */
+  .ev-section { margin: 14px 0 4px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); }
+  .ev-now { display: flex; align-items: center; gap: 10px; margin: 2px 0 8px; }
+  .ev-meter { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; font-size: 0.6rem; color: #8c8c8c; text-transform: uppercase; }
+  .ev-meter i { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.07); overflow: hidden; min-width: 30px; }
+  .ev-meter b { display: block; height: 100%; width: 0; background: #0f8; transition: width 0.08s linear; }
+  .ev-meter + .ev-meter b { background: #6cf; }
+  .ev-tag { flex: none; min-width: 84px; text-align: center; font-size: 0.66rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
+            color: #777; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; padding: 4px 6px; }
+  .ev-tag.live { color: #ffb347; border-color: #ffb347; background: rgba(255,179,71,0.12); }
+  .ev-tag.flash { color: #111; background: #ffb347; }
+  .ev-ghost { fill: none; stroke-width: 1.5; stroke-dasharray: 3 2; }
+  .ev-ghost-tag { font-size: 10px; font-weight: 800; letter-spacing: 0.04em; pointer-events: none; }
+  .ev-ghost-line { stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.6; }
+  .weight-row[hidden], .ev-section .hint[hidden] { display: none; }
 
   .preset-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .preset-row input[type=number] { width: 60px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 8px; font-size: 0.85rem; }
@@ -170,6 +185,9 @@
   #durTime { text-align: right; }
   #volumeRow { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px; }
   #volumeRow input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
+  #leakRow { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+  #leakRow input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
+  #leakRow .field-label { flex: none; margin: 0; }
   #masterVolLabel { margin: 0; flex: none; white-space: nowrap; }
 
   /* --- buttons --- */
@@ -180,6 +198,11 @@
   #dimOverlay { position: fixed; inset: 0; z-index: 1000; background: #000; display: flex; align-items: flex-end; justify-content: center;
                 padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px)); color: #262626; font-size: 0.8rem; touch-action: manipulation; }
   #dimOverlay[hidden] { display: none; }
+  .pair-qr { background: #fff; border-radius: 10px; padding: 6px; width: min(100%, 360px); margin: 8px auto; }
+  .pair-qr svg { display: block; width: 100%; height: auto; }
+  .pair-qr[hidden] { display: none; }
+  .pair-video { width: min(100%, 360px); border-radius: 10px; background: #000; display: block; margin: 8px auto; }
+  .pair-code { width: 100%; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 8px; font: 0.68rem/1.35 ui-monospace, Consolas, monospace; word-break: break-all; resize: vertical; -webkit-user-select: text; user-select: text; }
   #sensorBtn, #handBtn { color: #888; font-size: 0.72rem; text-align: center; margin: 8px 0 2px; }
   #sensorBtn.active { color: #0f8; }
   #calibrateBtn { background: #333; color: #eee; }
@@ -298,6 +321,19 @@
   details.setup { margin-top: 10px; font-size: 0.72rem; color: #aaa; }
   details.setup[hidden] { display: none; }
   details.setup summary { cursor: pointer; color: #8a8a8a; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+  #ledStripsRow { flex-wrap: wrap; }
+  #ledStripsRow .seg-btn.off { opacity: 0.55; }
+  .strip-card { margin: 8px 0; padding: 10px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; background: rgba(255,255,255,0.03); }
+  .strip-card .host-row { display: flex; gap: 6px; min-width: 0; width: 100%; }
+  .strip-card .host-row input { flex: 1 1 auto; width: 100%; min-width: 7ch; }
+  .strip-card .host-row button { flex: none; width: auto; margin: 0; padding: 4px 12px; font-size: 0.72rem; }
+    .strip-card .find-results { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 0.7rem; color: #999; }
+  .strip-card .find-results:empty { display: none; }
+  .strip-card .strip-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .strip-card .strip-head input { flex: 1; min-width: 0; }
+  .strip-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+  .strip-grid label { font-size: 0.66rem; color: #999; }
+  .strip-card input[type=text], .strip-card input[type=number], .strip-card select { min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.78rem; -webkit-user-select: text; user-select: text; }
   .led-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; margin-top: 8px; }
   .led-grid input[type=text], .led-grid input[type=number] { min-width: 0; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.78rem; -webkit-user-select: text; user-select: text; }
   .led-grid input[type=range] { margin-top: 0; }
@@ -376,7 +412,11 @@
   .close-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #aaa; border-radius: 7px;
                width: 30px; height: 28px; font-size: 1.05rem; line-height: 1; cursor: pointer; flex: none; }
   .close-btn:hover { color: #eee; background: rgba(255,255,255,0.12); }
-  #sideCol #spatialPanel, #sideCol #ledPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+  #sideCol #spatialPanel, #sideCol #ledPanel, #sideCol #extPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+  .ext-btn.on { color: #ffb347; border-color: rgba(255,179,71,0.6); background: rgba(255,179,71,0.12); }
+  .ext-btn.open { background: rgba(255,255,255,0.16); }
+  .stem-card[hidden] { display: none; }
+  .ext-select { width: 100%; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 8px; font-size: 0.8rem; }
 
   /* --- rail: one icon per window, down the right edge --- */
   #rail { position: fixed; left: 0; top: 0; bottom: 0; width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
@@ -428,6 +468,29 @@
       <div class="weight-row"><label>Width</label><input type="range" id="ledSpread" min="1" max="90" step="1"><output id="ledSpreadOut"></output></div>
       <div class="field-label">Tail (seconds the trail behind a moving stem takes to fade &mdash; 0 = none)</div>
       <div class="weight-row"><label>Tail</label><input type="range" id="ledTail" min="0" max="3" step="0.1"><output id="ledTailOut"></output></div>
+      <div class="field-label">Strips this stem lights (tap to switch a strip on or off for this stem)</div>
+      <div class="seg-row" id="ledStripsRow"></div>
+    </div>
+
+    <div id="extPanel" hidden>
+      <div class="spatial-title"><span>EXTERNAL INPUT &mdash; <span id="extStemName"></span></span><button id="extCloseBtn" class="close-btn" title="Close" aria-label="Close external input panel">&times;</button></div>
+      <div class="hint left">Sound from a microphone, a line-in, a USB interface or a virtual cable (Ableton's output through a virtual cable, Voicemeeter, ...) is added to this stem and moves with it. "System audio" takes whatever a screen or a tab is playing: pick the screen and tick "Share system audio" (or a tab with "Share tab audio"). The browser asks for permission the first time. Use headphones with a mic.</div>
+      <div class="field-label">Input device</div>
+      <select id="extDevice" class="ext-select"></select>
+      <div class="field-label">Channels of that device</div>
+      <div class="seg-row" id="extPairRow">
+        <button class="seg-btn" data-value="0">None</button>
+        <button class="seg-btn" data-value="1">1&ndash;2</button>
+        <button class="seg-btn" data-value="2">3&ndash;4</button>
+        <button class="seg-btn" data-value="3">5&ndash;6</button>
+        <button class="seg-btn" data-value="4">7&ndash;8</button>
+      </div>
+      <div class="field-label">Level (a line-level player may need less than a mic)</div>
+      <div class="weight-row"><label>Level</label><input type="range" id="extGain" min="0" max="2" step="0.01"><output id="extGainOut"></output></div>
+      <div class="hint left" id="extHint"></div>
+      <div id="extRemoveBlock">
+        <button id="extRemoveBtn" class="action" title="Take this stem out of the window again">Remove this stem</button>
+      </div>
     </div>
 
     <div id="spatialPanel" hidden>
@@ -477,12 +540,59 @@
         <button class="seg-btn" data-value="3">Precalc</button>
         <button class="seg-btn" data-value="4">Follow</button>
         <button class="seg-btn" data-value="5">Sections</button>
+        <button class="seg-btn" data-value="6">Beat steps</button>
       </div>
-      <div class="hint left">Follow = the stem's own stereo position. Sections = a new spot at each change in the song (wide when loud).</div>
+      <div class="hint left">Follow = the stem's own stereo position. Sections = a new spot at each change in the song (wide when loud). Beat steps = hops to the next position on each beat.</div>
 
       <div id="fftSrcBlock">
         <div class="field-label">Analyse audio from (lets one stem move using another's sound)</div>
         <div class="seg-row" id="fftSrcRow"><!-- one button per stem, built from the stem list --></div>
+      </div>
+
+      <!-- Beat steps: the stem jumps to the next position on each beat. The
+           beats come from analysing the song (js/beats.js, in this page), so any stem's
+           beats - or the whole mix's - can drive any other stem. -->
+      <div id="beatBlock" hidden>
+        <div class="field-label">Beat from (a stem's own beat, or the whole mix)</div>
+        <div class="seg-row" id="beatSrcRow"><!-- one button per stem plus the mix --></div>
+        <div class="field-label">Follow &mdash; a steady beat (tempo found, held through gaps), or every peak (each hit as it happens, however irregular)</div>
+        <div class="seg-row" id="beatFollowRow">
+          <button class="seg-btn" data-value="0">Steady beat</button>
+          <button class="seg-btn" data-value="1">Every peak</button>
+        </div>
+        <div id="beatSenseBlock" hidden>
+          <div class="field-label">Peak sensitivity</div>
+          <div class="seg-row" id="beatSenseRow">
+            <button class="seg-btn" data-value="0">Hits only</button>
+            <button class="seg-btn" data-value="1">Normal</button>
+            <button class="seg-btn" data-value="2">Everything</button>
+          </div>
+        </div>
+        <div class="field-label">Step every (beats or peaks)</div>
+        <div class="seg-row" id="beatEveryRow">
+          <button class="seg-btn" data-value="1">1</button>
+          <button class="seg-btn" data-value="2">2</button>
+          <button class="seg-btn" data-value="4">4</button>
+          <button class="seg-btn" data-value="8">8</button>
+        </div>
+        <div class="field-label">Positions around the circle (4 = the four speakers)</div>
+        <div class="seg-row" id="beatStepsRow">
+          <button class="seg-btn" data-value="2">2</button>
+          <button class="seg-btn" data-value="3">3</button>
+          <button class="seg-btn" data-value="4">4</button>
+          <button class="seg-btn" data-value="6">6</button>
+          <button class="seg-btn" data-value="8">8</button>
+        </div>
+        <div class="field-label">Order</div>
+        <div class="seg-row" id="beatPatternRow">
+          <button class="seg-btn" data-value="0">&rarr; Clockwise</button>
+          <button class="seg-btn" data-value="1">&larr; Anticlockwise</button>
+          <button class="seg-btn" data-value="2">&harr; Back and forth</button>
+          <button class="seg-btn" data-value="3">Shuffle</button>
+        </div>
+        <div class="field-label">Nudge (ms &mdash; later if the jump feels early, earlier if late)</div>
+        <div class="weight-row"><label>Nudge</label><input type="range" id="beatNudge" min="-200" max="200" step="5"><output id="beatNudgeOut"></output></div>
+        <div class="hint" id="beatsHint" style="text-align:left"></div>
       </div>
 
       <div class="field-label">Auto role &mdash; <span id="roleLabel"></span></div>
@@ -513,6 +623,69 @@
         <div class="hint left" id="tempoHint" hidden></div>
       </div>
 
+      <!-- Sound events (js/events.js, the same file on both rigs): this stem's own audio is
+           listened to live, and a whoosh, riser, impact or pad sets off a matching movement. -->
+      <div class="ev-section">
+        <div class="field-label">Sound events &mdash; moves this stem when it hears a whoosh, riser, impact or pad</div>
+        <div class="seg-row" id="evOnRow">
+          <button class="seg-btn off" data-value="0">Off</button>
+          <button class="seg-btn" data-value="1">Listen</button>
+        </div>
+        <div class="ev-now" id="evNow">
+          <div class="ev-meter"><span>Level</span><i><b id="evLevelBar"></b></i></div>
+          <div class="ev-meter"><span>Air</span><i><b id="evAirBar"></b></i></div>
+          <div class="ev-tag" id="evTag">&ndash;</div>
+        </div>
+        <div class="field-label">Try one now (no sound needed)</div>
+        <div class="seg-row" id="evTestRow">
+          <button class="seg-btn" data-value="whoosh">Whoosh</button>
+          <button class="seg-btn" data-value="riser">Riser</button>
+          <button class="seg-btn" data-value="impact">Impact</button>
+          <button class="seg-btn" data-value="pad">Pad</button>
+        </div>
+        <div id="evBlock">
+          <div class="field-label">React to (any of them)</div>
+          <div class="seg-row" id="evTypesRow">
+            <button class="seg-btn" data-value="1">Whoosh</button>
+            <button class="seg-btn" data-value="2">Riser</button>
+            <button class="seg-btn" data-value="4">Impact</button>
+            <button class="seg-btn" data-value="8">Pad</button>
+          </div>
+          <div class="weight-row"><label>Sense</label><input type="range" id="evSense" min="0" max="1" step="0.05"><output id="evSenseOut"></output></div>
+          <div class="field-label">Combine with the stem's own motion</div>
+          <div class="seg-row" id="evModeRow">
+            <button class="seg-btn" data-value="0">Override</button>
+            <button class="seg-btn" data-value="1">Offset</button>
+            <button class="seg-btn" data-value="2">Modulate</button>
+          </div>
+          <div class="hint left" id="evModeHint"></div>
+          <div class="field-label">Path</div>
+          <div class="seg-row" id="evAimRow">
+            <button class="seg-btn" data-value="0">Front &rarr; back</button>
+            <button class="seg-btn" data-value="1">Back &rarr; front</button>
+            <button class="seg-btn" data-value="2">Left &rarr; right</button>
+            <button class="seg-btn" data-value="3">Right &rarr; left</button>
+            <button class="seg-btn" data-value="4">From the stem</button>
+            <button class="seg-btn" data-value="5">Phone aim</button>
+          </div>
+          <div class="field-label">Speed</div>
+          <div class="seg-row" id="evCurveRow">
+            <button class="seg-btn" data-value="0">Steady</button>
+            <button class="seg-btn" data-value="1">Accelerate</button>
+            <button class="seg-btn" data-value="2">Brake</button>
+          </div>
+          <div class="weight-row"><label>Speed</label><input type="range" id="evSpeed" min="0.25" max="3" step="0.05"><output id="evSpeedOut"></output></div>
+          <div class="field-label">Distance cues &mdash; closer = louder, further = duller, Doppler bends the pitch</div>
+          <div class="seg-row" id="evCuesRow">
+            <button class="seg-btn" data-value="1">Gain</button>
+            <button class="seg-btn" data-value="2">Filter</button>
+            <button class="seg-btn" data-value="4">Doppler</button>
+          </div>
+          <div class="weight-row" id="evRoomRow"><label>Room</label><input type="range" id="evRoom" min="2" max="40" step="1"><output id="evRoomOut"></output></div>
+          <div class="hint left" id="evCuesHint"></div>
+        </div>
+      </div>
+
       <div class="field-label">Position (reference point &mdash; also set by dragging the dial)</div>
       <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
     </div>
@@ -521,6 +694,9 @@
   <section class="panel" id="stemCol">
     <div class="panel-title">Stems &mdash; drag dial to place &middot; ARM = follows rotate</div>
     <div class="stem-grid" id="stemGrid"></div>
+    <div class="quick-row">
+      <button id="addStemBtn" title="Add a stem that plays a sound input (a mic, a CD player, another program)">+ Add stem (live input)</button>
+    </div>
     <div class="quick-row">
       <button id="selectAllBtn">Arm All</button>
       <button id="selectNoneBtn">Arm None</button>
@@ -567,8 +743,31 @@
     <input type="range" id="slider" min="-180" max="180" value="0" step="1" aria-label="Rotate armed stems">
     <div class="hint">Rotates armed stems together. Drag a dot on the radar, or a dial, to place one stem.</div>
     <div id="sensorBtn">Phone motion: off (set a stem to Phone)</div>
+    <div class="hint" id="remoteStatus" hidden></div>
+    <div id="phonesBox" hidden>
+      <div class="field-label">Phones steering &mdash; tick the stems each phone moves (none ticked = every stem set to Phone)</div>
+      <div id="phonesList"></div>
+    </div>
+    <button id="pairBtn" class="action" title="Steer this page from a phone - no bridge needed. Pair as many phones as you like, each with its own stems">Pair a phone (remote motion)</button>
+    <div id="pairBox" hidden>
+      <div class="field-label">1 &middot; Send this code to the phone and paste it there. On the phone open <a href="remote.html" target="_blank" rel="noopener" style="color:#0f8">remote.html</a> in its browser, or the SpatialStage Rig app &rarr; "Control a web app"</div>
+      <div id="pairQr" class="pair-qr" hidden></div>
+      <div class="hint">Or scan this with the phone's camera (it opens remote.html with the code filled in), or in the Rig app: Control a web app &rarr; Scan.</div>
+      <textarea id="pairOffer" class="pair-code" readonly rows="3" spellcheck="false"></textarea>
+      <div class="seg-row"><button id="pairCopyBtn" class="seg-btn">Copy code</button></div>
+      <div class="field-label">2 &middot; The phone shows a reply: scan it with this computer's camera, or paste it here</div>
+      <div class="seg-row"><button id="pairScanBtn" class="seg-btn">Scan the phone's QR (camera)</button></div>
+      <video id="pairVideo" class="pair-video" playsinline muted hidden></video>
+      <textarea id="pairAnswer" class="pair-code" rows="3" spellcheck="false" autocomplete="off"></textarea>
+      <div class="seg-row"><button id="pairConnectBtn" class="seg-btn active">Connect</button></div>
+      <div class="hint" id="pairStatus"></div>
+    </div>
     <button id="calibrateBtn" class="action" title="Put every stem at the centre and start all movement from there">Zero / Centre all</button>
     <button id="dimBtn" class="action" title="Black screen that keeps this page (and phone control) running - tap it to wake">Dim screen (keeps control on)</button>
+    <div id="leakRow" title="Every stem also plays equally from every speaker, this much of the way. 0 = purely panned, 100 = every speaker hears the same mix">
+      <span class="field-label" id="leakLabel">Leak to all speakers 0%</span>
+      <input type="range" id="leakSlider" min="0" max="1" step="0.01" value="0" aria-label="Leak of every stem to all speakers">
+    </div>
     <div id="sensorOptions" hidden>
       <div class="field-label">Phone turn direction (swap if turning right sends the sound left)</div>
       <div class="seg-row" id="phoneInvertRow">
@@ -687,20 +886,11 @@
     </div>
     <div class="hint">Pd match reproduces the live rig's pan + inter-aural delay exactly. HRTF uses the browser's head-related response for a more out-of-head image.</div>
     <details class="setup" id="ledSetup">
-      <summary>LED strip (WLED, through the helper)</summary>
+      <summary>LED strips (WLED, through the helper)</summary>
       <div class="hint left">Lights a WLED strip around you in each stem's direction and colour, like the Pd rig's. Needs SpatialStage Helper 1.1 running on this PC (browsers cannot talk to WLED directly) and WLED's "Receive UDP realtime" on.</div>
-      <div class="led-grid">
-        <label for="ledHost">WLED address</label><input type="text" id="ledHost" placeholder="192.168.1.50" autocomplete="off">
-        <label for="ledCount">LEDs in the ring</label><input type="number" id="ledCount" min="1" max="490">
-        <label for="ledStart">First ring LED</label><input type="number" id="ledStart" min="0" max="489">
-        <label for="ledFront">LED straight ahead</label><input type="number" id="ledFront" min="0">
-        <label for="ledBrightness">Brightness</label><input type="range" id="ledBrightness" min="0" max="1" step="0.05">
-      </div>
-      <div class="field-label">Direction (LED numbers go this way round, seen from above)</div>
-      <div class="seg-row" id="ledDirRow">
-        <button class="seg-btn" data-value="1">Clockwise</button>
-        <button class="seg-btn" data-value="0">Anticlockwise</button>
-      </div>
+      <div class="hint left">One entry per WLED controller, each with its own ring size and calibration. Then pick, per stem (the LED button on its card), which strips it lights.</div>
+      <div id="ledStripEditor"></div>
+      <button id="ledStripAddBtn" class="action">+ Add a WLED strip</button>
       <div class="seg-row" id="ledRunRow">
         <button class="seg-btn" data-value="1">Strip on</button>
         <button class="seg-btn" data-value="0">Off</button>
@@ -760,7 +950,13 @@
 <script src="js/stems.js"></script>
 <script src="js/wav.js"></script>
 <script src="js/curves.js"></script>
+<script src="js/pair.js"></script>
+<script src="js/vendor/qrcode-generator.js"></script>
+<script src="js/vendor/jsQR.js"></script>
+<script src="js/qr.js"></script>
+<script src="js/beats.js"></script>
 <script src="js/roles.js"></script>
+<script src="js/events.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/motion.js"></script>
 <script src="js/helper.js"></script>

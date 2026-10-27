@@ -30,6 +30,9 @@ API, all under http://127.0.0.1:47800/v1 - JSON unless it says otherwise:
                                     on to host:port - the page's LED strip
                                     output (browsers cannot send UDP). Only
                                     to addresses on the local network.
+  GET    /wled/scan                 look for WLED controllers on this PC's
+                                    local network(s): [{ip, name, version,
+                                    leds}]. Takes a few seconds.
 <id> is "<key>-<model>", <key> being the page's SHA-256 (hex) of the file.
 
 Environment:
@@ -50,12 +53,13 @@ import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("SPATIALSTAGE_HELPER_PORT", "47800"))
 APP_DIR = Path(__file__).resolve().parent
@@ -353,6 +357,54 @@ def led_address(host):
     return addr if ok else None
 
 
+def local_subnets():
+    """The /24 networks this PC is on (private IPv4 only)."""
+    addrs = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    try:  # the address the default route uses; nothing is sent
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            addrs.add(s.getsockname()[0])
+    except OSError:
+        pass
+    nets = []
+    for a in sorted(addrs):
+        try:
+            ip = ipaddress.ip_address(a)
+        except ValueError:
+            continue
+        if ip.version == 4 and ip.is_private and not ip.is_loopback and not ip.is_link_local:
+            net = ipaddress.ip_network(a + "/24", strict=False)
+            if net not in nets:
+                nets.append(net)
+    return nets
+
+
+def probe_wled(ip):
+    try:
+        with urlopen(f"http://{ip}/json/info", timeout=1.0) as r:
+            info = json.loads(r.read(20000).decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if not isinstance(info, dict) or "ver" not in info or "leds" not in info:
+        return None
+    leds = info.get("leds") or {}
+    return {"ip": str(ip), "name": str(info.get("name") or "WLED")[:40], "version": str(info.get("ver"))[:20],
+            "leds": leds.get("count") if isinstance(leds.get("count"), int) else None}
+
+
+def scan_wled():
+    """Ask every address on the local /24s for WLED's /json/info."""
+    ips = [h for net in local_subnets() for h in net.hosts()]
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        found = [r for r in pool.map(probe_wled, ips) if r]
+    return sorted(found, key=lambda r: ipaddress.ip_address(r["ip"]))
+
+
 def job_loop():
     while True:
         wake.wait()
@@ -494,9 +546,11 @@ class Handler(BaseHTTPRequestHandler):
                 "models": [{"id": k, "label": v["label"], "stems": v["stems"], "downloaded": model_downloaded(k)}
                            for k, v in MODELS.items()],
                 "defaultModel": DEFAULT_MODEL, "jobs": active, "songCount": len(list_songs()),
-                "features": ["parts", "led"],
+                "features": ["parts", "led", "wled-scan"],
                 "parts": {"installed": drumsep["installed"], "modelDownloaded": (DRUM_MODEL_DIR / DRUM_MODEL).is_file()},
             })
+        if segs == ["wled", "scan"]:
+            return self.send_json(200, {"found": scan_wled()})
         if segs == ["songs"]:
             return self.send_json(200, {"songs": list_songs()})
         if segs and len(segs) in (2, 3) and segs[0] == "songs" and SONG_ID_RE.match(segs[1]):

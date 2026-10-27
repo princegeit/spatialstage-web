@@ -11,8 +11,12 @@
 //     each armed stem's phone offset (the bridge's phoneRotate).
 //   - Stem setups: numbered presets plus setups attached to songs; a song
 //     loads its own setup, or preset 0 (js/setups.js, the bridge's model).
-const { STEMS: ALL_STEMS, DRUM_PARTS, GEOMETRY, COLOR: STEM_COLOR, ICONS, LEFTOVER } = SSStems;
+const { STEMS: ALL_STEMS, DRUM_PARTS, INPUT_STEMS, GEOMETRY, COLOR: STEM_COLOR, ICONS, LEFTOVER } = SSStems;
 const IS_PART = new Set(DRUM_PARTS);
+// The input stems have no file: they play a sound input (the EXT option, engine.setLive) and stay out
+// of the window until added with "+ Add stem". Every stem can take a sound input too.
+const IS_INPUT = new Set(INPUT_STEMS);
+const stemTitle = (s) => (IS_INPUT.has(s) ? 'INPUT ' + s.slice(5) : s.toUpperCase());
 
 const $ = (id) => document.getElementById(id);
 const status = $('status'), val = $('val'), stemLabel = $('stemLabel');
@@ -50,7 +54,7 @@ let loading = null;      // { song, pct, autoplay } while one is decoding
 let seeking = false, seekDirty = false;
 const spatial = {};
 for (const s of ALL_STEMS) spatial[s] = motion.stems[s].params;
-let activeSpatialStem = null, activeLedStem = null;
+let activeSpatialStem = null, activeLedStem = null, activeExtStem = null;
 let lastSliderValue = 0;
 let dragging = null;
 const cards = {};
@@ -76,6 +80,7 @@ startBtn.addEventListener('click', async () => {
   } catch (e) { alert('Could not start audio: ' + e.message); return; }
   motion.start();
   applyOutputPrefs();
+  restoreLiveInputs();
   startOverlay.hidden = true;
   status.classList.add('connected');
   refreshStatus();
@@ -102,7 +107,7 @@ function buildCards() {
     card.innerHTML =
       '<div class="card-head">' +
         '<svg viewBox="0 0 24 24" stroke="' + c + '">' + ICONS[stem] + '</svg>' +
-        '<span class="stem-name">' + stem.toUpperCase() + '</span>' +
+        '<span class="stem-name">' + stemTitle(stem) + '</span>' +
         '<span class="stem-note"></span>' +
       '</div>' +
       '<div class="level"><div class="level-fill"></div></div>' +
@@ -136,6 +141,7 @@ function buildCards() {
       '</div>' +
       '<div class="card-row2">' +
         '<button class="tog-btn led-btn" hidden><span class="swatch"></span>LED</button>' +
+        '<button class="tog-btn ext-btn" title="External input: sound from a mic or line-in into this stem">EXT</button>' +
       '</div>';
     stemGrid.appendChild(card);
     cards[stem] = {
@@ -153,6 +159,7 @@ function buildCards() {
       cam: card.querySelector('.cam-btn'),
       spatial: card.querySelector('.spatial-btn'),
       led: card.querySelector('.led-btn'),
+      ext: card.querySelector('.ext-btn'),
       level: card.querySelector('.level-fill'),
       note: card.querySelector('.stem-note'),
     };
@@ -175,6 +182,7 @@ function buildCards() {
       if (!draggingFiles(ev)) return;
       ev.preventDefault(); ev.stopPropagation();
       dragDepth = 0; dropZone.classList.remove('over');
+      if (IS_INPUT.has(stem)) { toast(stemTitle(stem) + ' plays a sound input, not a file.'); return; }
       dropOnStem(stem, [...ev.dataTransfer.files].find((f) => /\.(wav|wave|flac|mp3|m4a|aac|mp4|ogg|oga|opus|webm|aif|aiff|caf)$/i.test(f.name) || (f.type || '').startsWith('audio/')));
     });
     card.addEventListener('click', (ev) => {   // anywhere on the card but its controls
@@ -182,6 +190,7 @@ function buildCards() {
       if (activeSpatialStem !== stem) openSpatialPanel(stem);
     });
     cards[stem].led.addEventListener('click', () => openLedPanel(stem));
+    cards[stem].ext.addEventListener('click', () => openExtPanel(stem));
     bindKnob(card.querySelector('.knob'), stem);
     bindFader(card.querySelector('.fader'), stem);
   }
@@ -193,11 +202,12 @@ function buildCards() {
 const songHasParts = () => DRUM_PARTS.some((p) => engine.hasStem(p));
 // A stem the loaded song has no audio for (with no song loaded: the drum parts) is
 // collapsed to its heading and left off the radar and the hands.
-const stemAbsent = (stem) => engine.song ? stemNote(stem) === 'silent' : IS_PART.has(stem);
+const stemAbsent = (stem) => IS_INPUT.has(stem) ? !inputAdded[stem] : engine.song ? stemNote(stem) === 'silent' : IS_PART.has(stem);
 const stemShown = (stem) => !stemAbsent(stem);
 
 // Why a stem has no sound right now, or '' if it has.
 function stemNote(stem) {
+  if (IS_INPUT.has(stem)) return '';   // plays a sound input, not the song
   if (!engine.song) return '';
   if (stem === 'drums' && songHasParts()) return 'rest';
   if (!engine.hasStem(stem)) return 'silent';
@@ -235,6 +245,12 @@ function refreshCards() {
   for (const stem of ALL_STEMS) {
     const k = cards[stem];
     if (!k) continue;
+    k.card.hidden = IS_INPUT.has(stem) && !inputAdded[stem];
+    const liveOn = !!engine.live[stem];
+    k.ext.classList.toggle('on', liveOn);
+    k.ext.classList.toggle('open', stem === activeExtStem);
+    k.ext.title = liveOn ? 'External input on: ' + (liveSettings[stem].label || 'default input') + ', channels ' + (2 * liveSettings[stem].pair - 1) + '-' + (2 * liveSettings[stem].pair)
+                         : 'External input: sound from a mic or line-in into this stem (off)';
     const armed = selectedStems.has(stem);
     k.sel.setAttribute('opacity', armed ? 1 : 0.12);
     k.arm.classList.toggle('armed', armed);
@@ -268,13 +284,20 @@ function refreshCards() {
 }
 
 // One place for "put this stem at this angle", shared by dial, radar,
-// keyboard, CENTER, the Position slider and hand tracking: the angle
-// becomes the stem's reference point and its phone offset restarts.
+// keyboard, CENTER, the Position slider and hand tracking. An armed stem keeps
+// its motion (phone, fft, preset) and the reference point moves by whatever
+// makes it sound at the angle right now, so motion carries on around where it
+// was dropped. An unarmed stem has no motion: the angle is its reference point.
 function placeStem(stem, deg) {
   azim[stem] = wrap180(deg);
-  motion.setParam(stem, 'base', Math.round(wrap180(azim[stem] - base[stem])));
-  phone[stem] = 0;
-  motion.setPhone(stem, 0);
+  const st = motion.stems[stem];
+  if (st.armed) {
+    motion.setParam(stem, 'base', Math.round(wrap180(azim[stem] - base[stem] - st.motionOut)));
+  } else {
+    motion.setParam(stem, 'base', Math.round(wrap180(azim[stem] - base[stem])));
+    phone[stem] = 0;
+    motion.setPhone(stem, 0);
+  }
   markModified();
   refreshCards(); requestRadar();
   if (stem === activeSpatialStem) refreshSpatialPanel();
@@ -284,10 +307,11 @@ function placeStem(stem, deg) {
 // offset. Not a setup change - the rig does not count it as one either.
 // `via` ('phone' or 'cam') limits it to stems with that input switched on;
 // the slider and the radar ring (no `via`) turn every armed stem.
-function rotateArmedBy(d, via) {
+function rotateArmedBy(d, via, only) {
   if (!d) return;
   for (const stem of selectedStems) {
     if (via && ctl[stem] !== via) continue;
+    if (only && !only.includes(stem)) continue;   // a paired phone with its own stems
     phone[stem] = wrap180(phone[stem] + d);
     motion.setPhone(stem, Math.round(phone[stem]));
   }
@@ -391,8 +415,17 @@ function toggleControl(via, stem) {
   buzz(15);
 }
 
+// CENTER: wherever the stem is heard from right now becomes front. Its reference point (base) moves
+// by that much, so phone, FFT and preset motion carry on around the new front instead of being
+// dropped; the phone offset is left alone. An unarmed stem sits at its reference point.
 function centerStem(stem) {
-  placeStem(stem, 0);
+  const m = motion.stems[stem];
+  const here = selectedStems.has(stem) ? m.effective : wrap180(base[stem] + m.params.base);
+  motion.setParam(stem, 'base', Math.round(wrap180(m.params.base - here)));
+  azim[stem] = 0;
+  markModified();
+  refreshCards(); requestRadar();
+  if (stem === activeSpatialStem) refreshSpatialPanel();
   buzz(15);
 }
 
@@ -448,6 +481,18 @@ const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), te
 const ts1El = $('ts1'), ts2El = $('ts2'), w1El = $('w1'), w2El = $('w2'), w3El = $('w3');
 const presetRateEl = $('presetRate'), smoothingSliderEl = $('smoothingSlider');
 const spatialBpmEl = $('spatialBpm'), spatialBaseEl = $('spatialBase');
+const beatBlock = $('beatBlock'), beatSrcRow = $('beatSrcRow'), beatEveryRow = $('beatEveryRow'), beatFollowRow = $('beatFollowRow');
+const beatSenseRow = $('beatSenseRow'), beatSenseBlock = $('beatSenseBlock'), beatStepsRow = $('beatStepsRow'), beatPatternRow = $('beatPatternRow');
+const beatNudgeEl = $('beatNudge'), beatNudgeOutEl = $('beatNudgeOut'), beatsHintEl = $('beatsHint');
+// One button per stem, then the whole mix (value = number of stems).
+[...ALL_STEMS, null].forEach((s, i) => {
+  if (s && IS_INPUT.has(s)) return;   // a live input has no beats analysed offline
+  const btn = document.createElement('button');
+  btn.className = 'seg-btn';
+  btn.dataset.value = i;
+  btn.textContent = s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Whole mix';
+  beatSrcRow.appendChild(btn);
+});
 
 ALL_STEMS.forEach((s, i) => {
   const btn = document.createElement('button');
@@ -507,9 +552,46 @@ bindSegRow(fftModeRow, (v) => {
   const stem = activeSpatialStem;
   if (!stem) return;
   if (v < 0) setSourceOn(stem, 'fft', false);
-  else { sendSpatial(stem, 'fftMode', v); if (fftWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'fft', true); }
+  else {
+    sendSpatial(stem, 'fftMode', v);
+    if (fftWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'fft', true);
+    if (v === 6) {
+      // Beat steps are positions: blended with the phone or a preset they would land halfway
+      // between speakers, so give the FFT source all of it (the blend rows can still be changed).
+      sendSpatial(stem, 'blendMode', 0);
+      sendSpatial(stem, 'blendWeights2', [1, 0]);
+      engine.beatsOf();   // start analysing the song now rather than at the first tick
+    }
+  }
   refreshSpatialPanel();
 });
+for (const [row, param] of [[beatSrcRow, 'beatSrc'], [beatEveryRow, 'beatEvery'], [beatStepsRow, 'beatSteps'], [beatPatternRow, 'beatPattern'], [beatFollowRow, 'beatFollow'], [beatSenseRow, 'beatSense']]) {
+  bindSegRow(row, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, v); refreshSpatialPanel(); } });
+}
+beatNudgeEl.addEventListener('input', () => {
+  if (!activeSpatialStem) return;
+  const v = Number(beatNudgeEl.value);
+  sendSpatial(activeSpatialStem, 'beatNudge', v);
+  beatNudgeOutEl.textContent = v + ' ms';
+});
+
+// What the Beat steps block says about the song's analysis and the chosen source.
+function beatsHintText(st) {
+  const entry = engine.song ? engine.beatsOf() : null;
+  if (!entry) return 'Load a song to find its beats.';
+  if (entry.status === 'analysing') return 'Analysing this song for beats (' + entry.progress + '%)...';
+  if (entry.status === 'error') return 'Could not analyse this song: ' + (entry.message || 'unknown error');
+  const name = st.beatSrc >= ALL_STEMS.length ? 'song' : ALL_STEMS[st.beatSrc];
+  const src = name === 'song' ? entry.data.song : entry.data.stems[name];
+  const what = name === 'song' ? 'the mix' : 'the ' + name + ' stem';
+  if (st.beatFollow === 1) {
+    const n = src ? SSMotion.peakTimes(src, st.beatSense).length : 0;
+    return n ? n + ' peaks in ' + what + ' at this sensitivity' : 'No peaks found in ' + what + ' — this stem will sit still. Try a higher sensitivity or the whole mix.';
+  }
+  if (!src || !src.beats.length) return 'No steady beat found in ' + what + ' — this stem will sit still. Try Every peak, or the whole mix.';
+  return src.bpm.toFixed(1) + ' BPM · ' + src.beats.length + ' beats · ' + Math.round(src.confidence * 100) + '% sure' +
+    (src.forced ? ' · following the song tempo' : '');
+}
 bindSegRow(fftSrcRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'fftSrc', v); refreshSpatialPanel(); } });
 bindSegRow(presetModeRow, (v) => {
   const stem = activeSpatialStem;
@@ -570,7 +652,8 @@ function openSpatialPanel(stem) {
   spatialPanel.hidden = activeSpatialStem === null;
   if (activeSpatialStem) {
     if (activeLedStem) openLedPanel(activeLedStem);   // one panel at a time
-    spatialStemName.textContent = stem.toUpperCase();
+    if (activeExtStem) openExtPanel(activeExtStem);
+    spatialStemName.textContent = stemTitle(stem);
     spatialStemName.style.color = STEM_COLOR[stem];
     refreshSpatialPanel();
   }
@@ -583,7 +666,7 @@ $('spatialCloseBtn').addEventListener('click', () => { if (activeSpatialStem) op
 // narrower desktop, a bottom sheet on a phone) so they open beside the cards
 // instead of under all of them.
 function syncSideCol() {
-  const open = activeSpatialStem !== null || activeLedStem !== null;
+  const open = activeSpatialStem !== null || activeLedStem !== null || activeExtStem !== null;
   $('sideCol').hidden = !open;
   $('app').classList.toggle('has-side', open);
   if (typeof railSync === 'function') railSync();
@@ -613,7 +696,21 @@ function refreshSpatialRows() {
       ' Now ' + motion.stems[activeSpatialStem].smoothingNow.toFixed(2) + '.';
   }
   $('roleLabel').textContent = (SSRoles.ROLES[activeSpatialStem] || {}).label || '';
-  fftSrcBlock.hidden = !fftOn;
+  const beatsOn = fftOn && st.fftMode === 6;
+  fftSrcBlock.hidden = !fftOn || beatsOn;   // Beat steps has its own source row
+  beatBlock.hidden = !beatsOn;
+  if (beatsOn) {
+    setSegActive(beatSrcRow, st.beatSrc);
+    setSegActive(beatEveryRow, st.beatEvery);
+    setSegActive(beatStepsRow, st.beatSteps);
+    setSegActive(beatPatternRow, st.beatPattern);
+    setSegActive(beatFollowRow, st.beatFollow);
+    setSegActive(beatSenseRow, st.beatSense);
+    beatSenseBlock.hidden = st.beatFollow !== 1;
+    if (document.activeElement !== beatNudgeEl) beatNudgeEl.value = st.beatNudge;
+    beatNudgeOutEl.textContent = st.beatNudge + ' ms';
+    beatsHintEl.textContent = beatsHintText(st);
+  }
   presetRateBlock.hidden = !presetOn;
   tempoBlock.hidden = !(presetOn && st.presetMode === 2);
   blendTwoRow.hidden = st.blendMode !== 0;
@@ -636,6 +733,7 @@ function refreshSpatialPanel() {
   $('spatialBaseOut').textContent = pos + '°';
   smoothingSliderEl.value = st.smoothing; $('smoothingOut').textContent = st.smoothing.toFixed(2);
   refreshTempoHint();
+  refreshEventRows();
 }
 
 // Under the tempo row: what the Tempo-Sync motion is actually following.
@@ -653,6 +751,81 @@ function refreshTempoHint() {
   }
   if (tempoHint.textContent !== t) tempoHint.textContent = t;
   tempoHint.hidden = !t;
+}
+
+/* ---------------- sound events (js/events.js) ---------------- */
+
+// The Sound events section of the spatial menu. Same controls, same values as the rig page's;
+// the layer itself runs in motion.js (StemMotion._events).
+const evOnRow = $('evOnRow'), evTypesRow = $('evTypesRow'), evModeRow = $('evModeRow'), evAimRow = $('evAimRow');
+const evCurveRow = $('evCurveRow'), evCuesRow = $('evCuesRow'), evTestRow = $('evTestRow');
+const evSenseEl = $('evSense'), evSpeedEl = $('evSpeed'), evRoomEl = $('evRoom');
+const EV_MODE_HINT = [
+  'Override: the event takes the stem over for its path, then glides it back to where it was.',
+  'Offset: the path is drawn around wherever the stem already is, on top of its phone, camera or preset motion.',
+  'Modulate: the stem keeps its direction; the event speeds up its preset motion (turn Preset motion on to hear it) and moves it nearer or further.',
+];
+function setBitsActive(row, mask) {
+  row.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', (mask & Number(b.dataset.value)) !== 0));
+}
+const evSet = (param) => (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, v); refreshEventRows(); } };
+const evToggleBit = (param) => (bit) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, param, spatial[activeSpatialStem][param] ^ bit); refreshEventRows(); } };
+bindSegRow(evOnRow, evSet('evOn'));
+bindSegRow(evModeRow, evSet('evMode'));
+bindSegRow(evAimRow, evSet('evAim'));
+bindSegRow(evCurveRow, evSet('evCurve'));
+bindSegRow(evTypesRow, evToggleBit('evTypes'));
+bindSegRow(evCuesRow, evToggleBit('evCues'));
+bindSegRow(evTestRow, (type) => { if (activeSpatialStem) { motion.fireEvent(activeSpatialStem, type); buzz(15); } });
+for (const [el, param, fmt] of [[evSenseEl, 'evSense', (v) => Math.round(v * 100) + '%'], [evSpeedEl, 'evSpeed', (v) => v.toFixed(2) + '×'], [evRoomEl, 'evRoom', (v) => v + ' m']]) {
+  el.addEventListener('input', () => {
+    if (!activeSpatialStem) return;
+    const v = Number(el.value);
+    sendSpatial(activeSpatialStem, param, v);
+    $(param + 'Out').textContent = fmt(v);
+    if (param === 'evRoom') refreshEventRows();
+  });
+}
+function evCuesHintText(st) {
+  if (!(st.evCues & SSEvents.CUE_BIT.doppler)) return '';
+  const rest = SSEvents.cues(1, st).delayMs;
+  return 'Doppler plays this stem about ' + rest.toFixed(0) + ' ms late even at rest (the room size sets how much a fly-by bends).';
+}
+function refreshEventRows() {
+  if (!activeSpatialStem) return;
+  const st = spatial[activeSpatialStem];
+  setSegActive(evOnRow, st.evOn);
+  setBitsActive(evTypesRow, st.evTypes);
+  setSegActive(evModeRow, st.evMode);
+  setSegActive(evAimRow, st.evAim);
+  setSegActive(evCurveRow, st.evCurve);
+  setBitsActive(evCuesRow, st.evCues);
+  $('evModeHint').textContent = EV_MODE_HINT[st.evMode];
+  $('evRoomRow').hidden = !(st.evCues & SSEvents.CUE_BIT.doppler);
+  $('evCuesHint').textContent = evCuesHintText(st);
+  $('evCuesHint').hidden = !$('evCuesHint').textContent;
+  if (document.activeElement !== evSenseEl) evSenseEl.value = st.evSense;
+  if (document.activeElement !== evSpeedEl) evSpeedEl.value = st.evSpeed;
+  if (document.activeElement !== evRoomEl) evRoomEl.value = st.evRoom;
+  $('evSenseOut').textContent = Math.round(st.evSense * 100) + '%';
+  $('evSpeedOut').textContent = st.evSpeed.toFixed(2) + '×';
+  $('evRoomOut').textContent = st.evRoom + ' m';
+  refreshEventNow();
+}
+// The live line under Listen: what the detector hears (level, air) and what it is doing.
+function refreshEventNow() {
+  if (!activeSpatialStem) return;
+  const st = spatial[activeSpatialStem], m = motion.stems[activeSpatialStem], L = m.events, ev = m.ev;
+  const listening = st.evOn === 1;
+  const level = listening ? Math.max(0, Math.min(1, (L.level - 40) / 60)) : 0;
+  const air = listening && L.level > SSEvents.GATE ? Math.max(0, Math.min(1, (L.bright + 40) / 40)) : 0;
+  $('evLevelBar').style.width = Math.round(level * 100) + '%';
+  $('evAirBar').style.width = Math.round(air * 100) + '%';
+  const tag = $('evTag');
+  const label = ev && ev.label;
+  tag.textContent = label || (listening ? (m.armed ? 'listening' : 'not armed') : 'off');
+  tag.classList.toggle('live', !!label);
+  tag.classList.toggle('flash', !!(ev && ev.flash));
 }
 
 /* ---------------- stem setups: presets + song-attached (js/setups.js) ---------------- */
@@ -984,8 +1157,25 @@ function drawRadar() {
       stemLayer.appendChild(svgEl('circle', { class: 'sel-ring', cx: dx, cy: dy, r: 11, stroke: colour }));
     }
     labelItems.push({ stem, a });
+    drawEventGhost(stem, a, colour);
   }
   drawLabels(labelItems);
+}
+
+// A sound event in progress: a dashed ring where the stem is heard from (its distance as the
+// radius - 1 = the ring), tied to the dot, with what the event is. The rig page draws the same.
+function drawEventGhost(stem, a, colour) {
+  const ev = motion.stems[stem].ev;
+  if (!ev || ev.w < 0.03) return;
+  const r = RING * Math.max(0.3, Math.min(1.55, ev.dist));
+  const [gx, gy] = polar(a, r), [dx, dy] = polar(a, RING);
+  if (Math.abs(r - RING) > 3) stemLayer.appendChild(svgEl('line', { class: 'ev-ghost-line', x1: dx, y1: dy, x2: gx, y2: gy, stroke: colour }));
+  stemLayer.appendChild(svgEl('circle', { class: 'ev-ghost', cx: gx, cy: gy, r: ev.flash ? 13 : 9, stroke: colour, opacity: 0.4 + 0.6 * ev.w }));
+  if (ev.label) {
+    const t = svgEl('text', { class: 'ev-ghost-tag', x: gx, y: gy - 14, 'text-anchor': 'middle', fill: colour });
+    t.textContent = ev.label.toUpperCase();
+    stemLayer.appendChild(t);
+  }
 }
 
 // Drag a dot to place that stem. With a mouse, dragging empty space inside
@@ -1050,7 +1240,7 @@ radar.addEventListener('touchstart', (ev) => {
 // while the panel shows them.
 let tickN = 0;
 motion.onTick = () => {
-  if ((++tickN & 1) === 0) requestRadar();
+  if ((++tickN & 1) === 0) { requestRadar(); if (activeSpatialStem) refreshEventNow(); }
   if (tickN % 20 === 0 && activeSpatialStem) {
     const st = spatial[activeSpatialStem];
     if (st.tempoSource === 1) refreshTempoHint();
@@ -1131,7 +1321,7 @@ function renderSongs() {
     const slots = document.createElement('span');
     slots.className = 'stem-slots';
     ALL_STEMS.forEach((s, k) => {
-      if (IS_PART.has(s)) return;   // the KIT tag stands for all six
+      if (IS_PART.has(s) || IS_INPUT.has(s)) return;   // the KIT tag stands for all six; inputs are not in a song
       const dot = document.createElement('i');
       dot.style.background = STEM_COLOR[s];
       if (song.slots[k]) dot.classList.add('on');
@@ -1813,7 +2003,11 @@ function refreshTransportButtons() {
   if (mark) paintMark(mark, current);
   refreshStatus();
 }
-engine.onStateChange = refreshTransportButtons;
+engine.onStateChange = () => {
+  refreshTransportButtons();
+  // the beat analysis reports progress through here
+  if (activeSpatialStem && spatial[activeSpatialStem].fftMode === 6 && !beatBlock.hidden) beatsHintEl.textContent = beatsHintText(spatial[activeSpatialStem]);
+};
 engine.onEnded = () => { if (songs.length) loadSongIndex((songIndex + 1) % songs.length, true); };
 
 // Keep playing across a skip if we were playing, or were about to be.
@@ -1922,6 +2116,20 @@ masterVolSlider.addEventListener('input', () => {
   engine.setMasterVolume(v);
 });
 
+// Leak: every stem also plays equally from every speaker, this much of the way. Kept in the browser.
+const leakSlider = $('leakSlider'), leakLabel = $('leakLabel');
+function setLeakUi(v) {
+  leakSlider.value = v;
+  leakLabel.textContent = 'Leak to all speakers ' + Math.round(v * 100) + '%';
+}
+leakSlider.addEventListener('input', () => {
+  const v = Number(leakSlider.value);
+  setLeakUi(v);
+  engine.setLeak(v);
+  try { localStorage.setItem('ss-leak', String(v)); } catch (e) {}
+});
+try { const v = Number(localStorage.getItem('ss-leak')); if (v > 0 && v <= 1) { setLeakUi(v); engine.setLeak(v); } } catch (e) {}
+
 bindSegRow($('panModeRow'), (v) => { engine.setPanMode(v); setSegActive($('panModeRow'), v); });
 
 /* ---------------- output: quad speakers, L/R swap ---------------- */
@@ -1961,7 +2169,7 @@ led.getState = () => {
   const azimuth = {}, gain = {};
   for (const s of ALL_STEMS) {
     azimuth[s] = motion.stems[s].effective;
-    gain[s] = engine.song && engine.hasStem(s) && !mutedStems.has(s) ? volume[s] : 0;
+    gain[s] = ((engine.song && engine.hasStem(s)) || engine.live[s]) && !mutedStems.has(s) ? volume[s] : 0;
   }
   return { azimuth, gain, mirror: engine.lrSwap };
 };
@@ -1969,34 +2177,251 @@ const ledStatus = $('ledStatus'), ledSetup = $('ledSetup');
 let ledWanted = pref('ledOn', false);
 led.onError = (msg) => { ledStatus.textContent = 'Not reaching the strip: ' + msg; };
 
+let stripEditorKey = '';
 function refreshLed() {
   ledSetup.hidden = isPhone;
-  const cfg = led.cfg;
-  for (const [id, v] of [['ledHost', cfg.host], ['ledCount', cfg.count], ['ledStart', cfg.startIndex], ['ledFront', cfg.frontIndex], ['ledBrightness', cfg.brightness]]) {
-    const el = $(id);
-    if (document.activeElement !== el) el.value = v;
-  }
-  setSegActive($('ledDirRow'), cfg.clockwise ? 1 : 0);
+  renderStripEditor();
   const can = led.configured && helperReadyNow() && SSHelper.supports('led');
   if (ledWanted && can) led.start(); else led.stop();
   setSegActive($('ledRunRow'), led.running ? 1 : 0);
-  ledStatus.textContent = !led.configured ? 'Enter the WLED address and LED count.'
-    : !helperReadyNow() ? 'Start SpatialStage Helper to drive the strip.'
+  const live = led.strips.filter((x) => x.host);
+  ledStatus.textContent = !led.configured ? 'Add a strip and enter its WLED address and LED count.'
+    : !helperReadyNow() ? 'Start SpatialStage Helper to drive the strips.'
     : !SSHelper.supports('led') ? 'Your helper is too old for the LED strip - download it again and run the installer (1.1).'
-    : led.running ? 'Sending to ' + cfg.host + ' (' + cfg.count + ' LEDs).' : 'Off.';
+    : led.running ? 'Sending to ' + live.map((x) => x.name + ' (' + x.host + ', ' + x.count + ' LEDs)').join(', ') + '.' : 'Off.';
   refreshCards();
 }
-const ledNumber = (id, key) => $(id).addEventListener('change', () => { led.set({ [key]: Number($(id).value) || 0 }); refreshLed(); });
-$('ledHost').addEventListener('change', () => { led.set({ host: $('ledHost').value.trim() }); if (!SSHelper.info) checkHelper(); refreshLed(); });
-ledNumber('ledCount', 'count'); ledNumber('ledStart', 'startIndex'); ledNumber('ledFront', 'frontIndex');
-$('ledBrightness').addEventListener('input', () => led.set({ brightness: Number($('ledBrightness').value) }));
-bindSegRow($('ledDirRow'), (v) => { led.set({ clockwise: v === 1 }); refreshLed(); });
+
+// The strip list's editor: one card per strip. Rebuilt only when the list changes, and never
+// under a field that is being edited.
+function renderStripEditor() {
+  const box = $('ledStripEditor');
+  const key = JSON.stringify(led.strips);
+  if (key === stripEditorKey) return;
+  if (box.contains(document.activeElement) && document.activeElement !== document.body) return;
+  stripEditorKey = key;
+  box.textContent = '';
+  const commit = () => { led.setStrips(led.strips); stripEditorKey = JSON.stringify(led.strips); if (!SSHelper.info) checkHelper(); refreshLed(); refreshLedPanel(); };
+  led.strips.forEach((strip, idx) => {
+    const card = document.createElement('div');
+    card.className = 'strip-card';
+    const head = document.createElement('div');
+    head.className = 'strip-head';
+    const name = document.createElement('input');
+    name.type = 'text'; name.value = strip.name; name.maxLength = 40; name.setAttribute('aria-label', 'Strip name');
+    name.addEventListener('change', () => { strip.name = name.value.trim() || 'Strip ' + (idx + 1); commit(); });
+    const del = document.createElement('button');
+    del.className = 'close-btn'; del.textContent = '\u00d7'; del.title = 'Remove this strip';
+    del.addEventListener('click', () => { led.strips.splice(idx, 1); commit(); stripEditorKey = ''; renderStripEditor(); });
+    head.append(name, del);
+    card.appendChild(head);
+    const grid = document.createElement('div');
+    grid.className = 'strip-grid';
+    const field = (label, el) => { const l = document.createElement('label'); l.textContent = label; grid.append(l, el); };
+    const input = (key, type, ph) => {
+      const i = document.createElement('input');
+      i.type = type; i.value = strip[key]; if (ph) i.placeholder = ph;
+      i.addEventListener('change', () => { strip[key] = type === 'number' ? Number(i.value) || 0 : i.value.trim(); commit(); });
+      return i;
+    };
+    const hostInput = input('host', 'text', '192.168.1.50');
+    const findBox = document.createElement('div');
+    findBox.className = 'find-results';
+    const findBtn = document.createElement('button');
+    findBtn.className = 'action'; findBtn.textContent = 'Find'; findBtn.title = 'Look for WLED controllers on this network';
+    findBtn.addEventListener('click', () => findWleds(findBox, findBtn, hostInput, strip, commit));
+    const hostRow = document.createElement('div');
+    hostRow.className = 'host-row';
+    hostRow.append(hostInput, findBtn);
+    field('WLED address', hostRow);
+    grid.appendChild(findBox);
+    field('LEDs in the ring', input('count', 'number'));
+    field('First ring LED', input('startIndex', 'number'));
+    field('LED straight ahead', input('frontIndex', 'number'));
+    const dir = document.createElement('select');
+    for (const [v, t] of [[true, 'Clockwise (to the listener\u2019s right)'], [false, 'Anticlockwise']]) {
+      const o = document.createElement('option'); o.value = String(v); o.textContent = t; if (strip.clockwise === v) o.selected = true; dir.appendChild(o);
+    }
+    dir.addEventListener('change', () => { strip.clockwise = dir.value === 'true'; commit(); });
+    field('LED numbers go', dir);
+    const br = document.createElement('input');
+    br.type = 'range'; br.min = 0; br.max = 1; br.step = 0.05; br.value = strip.brightness;
+    br.addEventListener('input', () => { strip.brightness = Number(br.value); led.save(); });
+    field('Brightness', br);
+    card.appendChild(grid);
+    box.appendChild(card);
+  });
+}
+// "Find": the helper asks this PC's local network for WLEDs (browsers cannot), and the page lists them.
+async function findWleds(box, btn, hostInput, strip, commit) {
+  if (btn.disabled) return;
+  box.textContent = '';
+  if (!helperReadyNow()) { await checkHelper(); }
+  if (!helperReadyNow()) { box.textContent = 'Needs SpatialStage Helper running on this PC.'; return; }
+  if (!SSHelper.supports('wled-scan')) { box.textContent = 'Your helper is too old to search - download it again and run the installer (1.2).'; return; }
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  box.textContent = 'Looking for WLEDs on your network (a few seconds)…';
+  let found = [], error = '';
+  try { found = await SSHelper.scanWled(); } catch (e) { error = 'Search failed: ' + (e.message || e); }
+  btn.disabled = false; btn.textContent = 'Find';
+  box.textContent = '';
+  if (error || !found.length) { box.textContent = error || 'No WLED found on this network. Is it powered and on the same Wi-Fi?'; return; }
+  for (const f of found) {
+    const b = document.createElement('button');
+    b.className = 'action';
+    b.textContent = f.name + ' — ' + f.ip + (f.leds ? ' (' + f.leds + ' LEDs)' : '');
+    b.addEventListener('click', () => {
+      strip.host = f.ip;
+      if (f.leds) strip.count = Math.max(1, Math.min(f.leds, 490 - (Number(strip.startIndex) || 0)));   // the strip's own LED count
+      box.textContent = '';
+      commit();
+      stripEditorKey = ''; renderStripEditor();
+    });
+    box.appendChild(b);
+  }
+}
+$('ledStripAddBtn').addEventListener('click', () => {
+  if (led.strips.length >= 8) { toast('Up to 8 strips'); return; }
+  led.strips.push({ id: 's' + Date.now().toString(36), name: 'Strip ' + (led.strips.length + 1) });
+  led.setStrips(led.strips);
+  stripEditorKey = ''; refreshLed(); refreshLedPanel();
+});
 bindSegRow($('ledRunRow'), (v) => {
   ledWanted = v === 1; setPref('ledOn', ledWanted);
   if (ledWanted && !helperReadyNow()) checkHelper().then(refreshLed);
   refreshLed();
 });
 ledSetup.addEventListener('toggle', () => { if (ledSetup.open && !SSHelper.info && SSHelper.seen) checkHelper(); });
+
+/* ---------------- external input (EXT) and added stems ---------------- */
+
+// Per stem: which sound input, which of its channel pairs, how loud. Saved in this browser (not in a
+// setup: it belongs to this computer's hardware). The input stems are shown once added.
+const liveSettings = {};
+for (const s of ALL_STEMS) liveSettings[s] = { deviceId: '', label: '', pair: 0, gain: 1 };
+const inputAdded = {};
+{
+  const saved = pref('live', {}), added = pref('inputsAdded', {});
+  for (const s of ALL_STEMS) if (saved[s]) Object.assign(liveSettings[s], saved[s]);
+  for (const s of INPUT_STEMS) inputAdded[s] = !!added[s];
+}
+const saveLive = () => { setPref('live', liveSettings); setPref('inputsAdded', inputAdded); };
+
+const extPanel = $('extPanel'), extPairRow = $('extPairRow'), extGainEl = $('extGain'), extDeviceEl = $('extDevice'), extHint = $('extHint');
+const addStemBtn = $('addStemBtn');
+let extGainTouched = 0;
+
+// Turn a saved choice into a running input (needs the tap that started audio, or any other tap).
+async function applyLive(stem, quiet) {
+  const l = liveSettings[stem];
+  try {
+    const r = await engine.setLive(stem, { deviceId: l.deviceId, pair: l.pair, gain: l.gain });
+    if (l.pair && r.channels && 2 * (l.pair - 1) >= r.channels) toast(stemTitle(stem) + ': that device has only ' + r.channels + ' channel' + (r.channels > 1 ? 's' : '') + ' - using the first.', 4200);
+    return true;
+  } catch (e) {
+    l.pair = 0;
+    saveLive();
+    if (!quiet) toast('Could not open the input: ' + (e.message || e.name), 5000);
+    return false;
+  } finally { refreshCards(); refreshExtPanel(); }
+}
+async function restoreLiveInputs() {
+  for (const s of ALL_STEMS) if (liveSettings[s].pair) await applyLive(s, true);
+}
+
+async function fillDevices() {
+  const list = await engine.inputDevices().catch(() => []);
+  const cur = activeExtStem ? liveSettings[activeExtStem].deviceId : '';
+  extDeviceEl.textContent = '';
+  const def = document.createElement('option');
+  def.value = ''; def.textContent = 'Default input';
+  extDeviceEl.appendChild(def);
+  const sys = document.createElement('option');
+  sys.value = engine.systemAudioId; sys.textContent = 'System audio (share a screen or tab)';
+  extDeviceEl.appendChild(sys);
+  for (const d of list) {
+    if (!d.deviceId || d.deviceId === 'default') continue;
+    const o = document.createElement('option');
+    o.value = d.deviceId; o.textContent = d.label;
+    extDeviceEl.appendChild(o);
+  }
+  extDeviceEl.value = [...extDeviceEl.options].some((o) => o.value === cur) ? cur : '';
+}
+
+function openExtPanel(stem) {
+  activeExtStem = (activeExtStem === stem) ? null : stem;
+  if (activeExtStem) {
+    if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
+    if (activeLedStem) openLedPanel(activeLedStem);
+    $('extStemName').textContent = stemTitle(stem);
+    $('extStemName').style.color = STEM_COLOR[stem];
+    fillDevices();
+  }
+  extPanel.hidden = activeExtStem === null;
+  refreshExtPanel();
+  syncSideCol();
+  refreshCards();
+}
+function refreshExtPanel() {
+  if (!activeExtStem) return;
+  const l = liveSettings[activeExtStem];
+  setSegActive(extPairRow, l.pair);
+  if (Date.now() - extGainTouched > 1000) extGainEl.value = l.gain;
+  $('extGainOut').textContent = Math.round(l.gain * 100) + '%';
+  if ([...extDeviceEl.options].some((o) => o.value === l.deviceId)) extDeviceEl.value = l.deviceId;
+  $('extRemoveBlock').hidden = !IS_INPUT.has(activeExtStem);
+  const e = engine.live[activeExtStem];
+  extHint.textContent = !navigator.mediaDevices ? 'This browser cannot open audio inputs here: it needs an https:// page (or localhost).'
+    : e ? 'On. If it sounds doubled or echoes, use headphones.' : l.pair ? 'Starting...' : 'Off - pick the channels of the input to use.';
+}
+bindSegRow(extPairRow, async (v) => {
+  if (!activeExtStem) return;
+  const l = liveSettings[activeExtStem];
+  l.pair = v;
+  l.label = extDeviceEl.selectedOptions[0] ? extDeviceEl.selectedOptions[0].textContent : '';
+  saveLive(); refreshExtPanel();
+  await applyLive(activeExtStem);
+  if (v) fillDevices();   // device names appear once permission is given
+  buzz(15);
+});
+extDeviceEl.addEventListener('change', async () => {
+  if (!activeExtStem) return;
+  const l = liveSettings[activeExtStem];
+  l.deviceId = extDeviceEl.value;
+  l.label = extDeviceEl.selectedOptions[0].textContent;
+  saveLive();
+  if (l.pair) await applyLive(activeExtStem);
+});
+extGainEl.addEventListener('input', () => {
+  extGainTouched = Date.now();
+  if (!activeExtStem) return;
+  liveSettings[activeExtStem].gain = Number(extGainEl.value);
+  engine.setLiveGain(activeExtStem, liveSettings[activeExtStem].gain);
+  saveLive(); refreshExtPanel();
+});
+$('extCloseBtn').addEventListener('click', () => { if (activeExtStem) openExtPanel(activeExtStem); });
+$('extRemoveBtn').addEventListener('click', async () => {
+  const stem = activeExtStem;
+  if (!stem) return;
+  openExtPanel(stem);
+  liveSettings[stem].pair = 0;
+  inputAdded[stem] = false;
+  saveLive();
+  await engine.setLive(stem, { pair: 0 }).catch(() => {});
+  refreshAddStem(); refreshCards(); requestRadar(); updateStemLabel();
+});
+function refreshAddStem() { addStemBtn.hidden = !INPUT_STEMS.some((s) => !inputAdded[s]); }
+addStemBtn.addEventListener('click', () => {
+  const stem = INPUT_STEMS.find((s) => !inputAdded[s]);
+  if (!stem) return;
+  inputAdded[stem] = true;
+  if (!liveSettings[stem].pair) liveSettings[stem].pair = 0;
+  saveLive();
+  refreshAddStem(); refreshCards(); requestRadar(); updateStemLabel();
+  openExtPanel(stem);
+  buzz(15);
+});
+refreshAddStem();
 
 // Per-stem LED look: one shared panel, like the rig's.
 const ledPanel = $('ledPanel'), ledColorEl = $('ledColor'), ledSpreadEl = $('ledSpread'), ledTailEl = $('ledTail');
@@ -2005,7 +2430,8 @@ function openLedPanel(stem) {
   ledPanel.hidden = activeLedStem === null;
   if (activeLedStem) {
     if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
-    $('ledStemName').textContent = stem.toUpperCase();
+    if (activeExtStem) openExtPanel(activeExtStem);
+    $('ledStemName').textContent = stemTitle(stem);
     refreshLedPanel();
   }
   syncSideCol();
@@ -2018,6 +2444,36 @@ function refreshLedPanel() {
   ledColorEl.value = look.color; $('ledColorHex').textContent = look.color;
   ledSpreadEl.value = look.spread; $('ledSpreadOut').textContent = Math.round(look.spread) + '°';
   ledTailEl.value = look.tail; $('ledTailOut').textContent = look.tail > 0 ? look.tail.toFixed(1) + 's' : 'off';
+  refreshStripChips();
+}
+
+// Which strips this stem lights: one toggle per strip. Rebuilt only when something changed.
+let stripChipsKey = '';
+function refreshStripChips() {
+  const row = $('ledStripsRow'), look = led.cfg.stems[activeLedStem];
+  const key = activeLedStem + '|' + JSON.stringify(led.strips.map((x) => [x.id, x.name, !!x.host])) + '|' + JSON.stringify(look.strips);
+  if (key === stripChipsKey) return;
+  stripChipsKey = key;
+  const on = new Set(Array.isArray(look.strips) ? look.strips : led.strips.map((x) => x.id));
+  row.textContent = '';
+  if (!led.strips.length) {
+    const hint = document.createElement('div');
+    hint.className = 'hint left'; hint.textContent = 'No strips yet - add one under "LED strips" in the Songs window.';
+    row.appendChild(hint);
+  }
+  for (const strip of led.strips) {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (on.has(strip.id) ? ' active' : ' off');
+    b.textContent = strip.name + (strip.host ? '' : ' (no address)');
+    b.addEventListener('click', () => {
+      const next = new Set(on);
+      if (next.has(strip.id)) next.delete(strip.id); else next.add(strip.id);
+      const all = led.strips.every((x) => next.has(x.id));
+      setLed({ strips: all ? null : led.strips.filter((x) => next.has(x.id)).map((x) => x.id) });
+      buzz(15);
+    });
+    row.appendChild(b);
+  }
 }
 const setLed = (patch) => { if (activeLedStem) { led.setStem(activeLedStem, patch); refreshLedPanel(); refreshCards(); } };
 bindSegRow($('ledOnRow'), (v) => setLed({ on: v === 1 }));
@@ -2108,6 +2564,7 @@ $('turnCalResetBtn').addEventListener('click', () => { turnCalOut.textContent = 
 // Motion follows the stems' control setting: it turns itself on while any
 // stem is set to Phone and off when none is (syncSources, below).
 let motionBlocked = false;
+let pairLive = false;   // a phone is paired (js/pair.js) and sending its turn
 async function startMotion() {
   if (phoneTurn.bound) return;
   if (!window.isSecureContext) { motionBlocked = true; sensorBtn.textContent = 'Phone motion needs an https:// page (or localhost)'; return; }
@@ -2128,14 +2585,26 @@ function bindOrientation() {
   sensorBtn.textContent = 'Phone motion: waiting for sensor...';
   showSensorOptions();
   clearTimeout(motionProbe);
-  motionProbe = setTimeout(() => {
-    if (phoneTurn.bound && !phoneTurn.seen) {
-      motionBlocked = true;
-      unbindOrientation();
-      sensorBtn.textContent = 'No motion sensor found on this device';
-      toast('No motion sensor found on this device - use the rotate slider, the dials or hand tracking instead.', 4200);
-    }
-  }, 2500);
+  motionProbe = setTimeout(probeMotion, 3000);
+}
+
+// No reading yet. Many phones have the plain orientation sensor but not the
+// compass-fused "absolute" one, so that stream never fires: try the gyro
+// (relative) stream once before deciding there is no sensor at all.
+function probeMotion() {
+  if (!phoneTurn.bound || phoneTurn.seen) return;
+  if (phoneTurn.useAbsolute) {
+    phoneTurn.useAbsolute = false;   // not saved: it is a fallback, not a choice
+    phoneTurn.bind();
+    showSensorOptions();
+    sensorBtn.textContent = 'Phone motion: no compass data, trying the gyro...';
+    motionProbe = setTimeout(probeMotion, 3000);
+    return;
+  }
+  motionBlocked = true;
+  unbindOrientation();
+  sensorBtn.textContent = 'No motion data received - allow Motion sensors for this site in the browser settings, then tap the page';
+  toast('No motion data from this device - allow "Motion sensors" in the browser site settings, or use the rotate slider / dials.', 5200);
 }
 
 function unbindOrientation() {
@@ -2304,7 +2773,7 @@ async function startHands() {
 function syncSources() {
   const anyPhone = ALL_STEMS.some((s) => ctl[s] === 'phone');
   const anyCam = ALL_STEMS.some((s) => ctl[s] === 'cam');
-  if (anyPhone && !phoneTurn.bound && !motionBlocked) startMotion();
+  if (anyPhone && !phoneTurn.bound && !motionBlocked && !pairLive) startMotion();
   else if (!anyPhone && phoneTurn.bound) { unbindOrientation(); toast('Motion off - the stems stay where they are'); }
   if (anyCam && !hand.running && !handStarting && !handBlocked) startHands();
   else if (!anyCam && hand.running) stopHands();
@@ -2312,6 +2781,177 @@ function syncSources() {
 }
 document.addEventListener('pointerdown', () => { motionBlocked = false; handBlocked = false; syncSources(); });
 setInterval(syncSources, 1000);
+
+/* ---------------- pair a phone (WebRTC, no server) ---------------- */
+
+// The phone (remote.html in its browser, or the Rig app) sends its turn straight to this page;
+// it steers the stems exactly like this device's own sensor would: armed stems set to Phone.
+// Zero / Centre on the phone presses this page's Zero / Centre all.
+(function () {
+  // Any number of phones, each its own Host. `host` is the one being paired right now; once it
+  // connects it joins `phones` and the next press of the button starts another. Each phone has
+  // its own stems (`stems`, null = every stem set to Phone) and its own turn baseline (`last`),
+  // so two phones never feed each other's deltas into the same stem.
+  let host = new SSPair.Host();
+  const phones = [];
+  let phoneSeq = 0;
+  const btn = $('pairBtn'), box = $('pairBox'), offerEl = $('pairOffer'), answerEl = $('pairAnswer'), st = $('pairStatus');
+  const phonesBox = $('phonesBox'), phonesList = $('phonesList');
+  const say = (t) => { st.textContent = t; };
+  function live() {
+    pairLive = phones.length > 0;
+    if (pairLive) { sensorBtn.classList.add('active'); sensorBtn.textContent = 'Phone motion: ' + phones.length + ' remote phone' + (phones.length > 1 ? 's' : '') + ' connected'; }
+    else if (!phoneTurn.bound) { sensorBtn.classList.remove('active'); sensorBtn.textContent = 'Phone motion: off (set a stem to Phone)'; }
+    renderPhones();
+  }
+  function assignTo(p, stems) {
+    p.stems = stems && stems.length ? stems : null;
+    p.host.send({ t: 'assign', stems: p.stems });
+    renderPhones();
+  }
+  function renderPhones() {
+    phonesBox.hidden = phones.length === 0;
+    phonesList.textContent = '';
+    for (const p of phones) {
+      const row = document.createElement('div');
+      const name = document.createElement('div'); name.className = 'field-label'; name.textContent = p.name;
+      const drop = document.createElement('button'); drop.className = 'seg-btn'; drop.textContent = 'Disconnect'; drop.style.marginLeft = '8px';
+      drop.addEventListener('click', () => { p.host.close(); forget(p); });
+      name.appendChild(drop);
+      row.appendChild(name);
+      const chips = document.createElement('div'); chips.className = 'seg-row';
+      for (const stem of ALL_STEMS) {
+        if (!stemShown(stem)) continue;
+        const b = document.createElement('button');
+        b.className = 'seg-btn' + (p.stems && p.stems.includes(stem) ? ' active' : '');
+        b.textContent = stemTitle(stem);
+        b.addEventListener('click', () => {
+          const set = new Set(p.stems || []);
+          if (set.has(stem)) set.delete(stem); else set.add(stem);
+          assignTo(p, [...set]);
+        });
+        chips.appendChild(b);
+      }
+      row.appendChild(chips);
+      phonesList.appendChild(row);
+    }
+  }
+  function forget(p) { const i = phones.indexOf(p); if (i >= 0) phones.splice(i, 1); live(); }
+  // The stems list changes as stems are added or removed: keep the chips current.
+  setInterval(() => { if (phones.length && !phonesList.contains(document.activeElement)) renderPhones(); }, 3000);
+  function wire(h) {
+    let p = null;
+    h.onState = (state, connected) => {
+      if (connected) {
+        if (!p) { p = { host: h, name: 'Phone ' + (++phoneSeq), stems: null, last: 0 }; phones.push(p); }
+        say('Phone connected. Tick its stems below, or leave none ticked to move every stem set to Phone.'); live(); if (room) { room.close(); room = null; }
+        h.send({ t: 'assign', stems: p.stems });
+      }
+      else if (state === 'failed' || state === 'closed' || state === 'disconnected') { say('Phone disconnected (' + state + ').'); if (p) forget(p); }
+      else say('Connecting (' + state + ')...');
+    };
+    h.onMessage = (m) => {
+      if (!p) return;
+      if (m.t === 'turn' && Number.isFinite(m.v)) {
+        const d = m.v - p.last; p.last = m.v;
+        if (!d) return;
+        rotateArmedBy(d, 'phone', p.stems);
+        val.textContent = Math.round(m.v) + '°';
+        refreshCards(); requestRadar();
+      }
+      else if (m.t === 'zero') {
+        p.last = 0;
+        if (p.stems) { for (const s of p.stems) placeStem(s, 0); buzz(50); }
+        else calibrateBtn.click();
+      }
+      else if (m.t === 'hello') {
+        if (typeof m.name === 'string' && m.name) { p.name = m.name.slice(0, 40); renderPhones(); }
+        h.send({ t: 'hello' }); h.send({ t: 'assign', stems: p.stems });
+      }
+    };
+  }
+  wire(host);
+  btn.addEventListener('click', async () => {
+    box.hidden = false; answerEl.value = ''; offerEl.value = '';
+    say('Making a code (a few seconds)...');
+    btn.disabled = true;
+    try {
+      if (room) { room.close(); room = null; }
+      if (phones.some((p) => p.host === host)) { host = new SSPair.Host(); wire(host); }   // that one is taken: pair another
+      offerEl.value = await host.offer();
+      // Listen on a one-time relay room first: the phone drops its reply there after one scan.
+      const name = SSPair.newRoom();
+      room = await SSPair.relayListen(name, (reply) => { host.accept(reply).then(() => say('Reply received - connecting...')).catch(() => {}); });
+      try { SSQR.render($('pairQr'), SSQR.remoteUrl(offerEl.value, name)); } catch (e) { $('pairQr').hidden = true; }
+      say('Scan the QR with the phone - that is all. (If it does not connect, use the reply from the phone below.)');
+    }
+    catch (e) { say('Could not make a code: ' + (e.message || e)); }
+    btn.disabled = false;
+  });
+  $('pairCopyBtn').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(offerEl.value); say('Code copied.'); }
+    catch (e) { offerEl.select(); say('Select the code and copy it.'); }
+  });
+  let stopScan = null, room = null;
+  $('pairScanBtn').addEventListener('click', async () => {
+    const video = $('pairVideo');
+    if (stopScan) { stopScan(); stopScan = null; video.hidden = true; return; }
+    video.hidden = false;
+    say('Hold the reply QR from the phone up to the camera...');
+    stopScan = await SSQR.scan(video, (text) => {
+      stopScan = null; video.hidden = true;
+      answerEl.value = SSQR.codeFrom(text);
+      $('pairConnectBtn').click();
+    }, (e) => { stopScan = null; video.hidden = true; say('Could not open the camera: ' + (e.message || e.name)); });
+  });
+  $('pairConnectBtn').addEventListener('click', async () => {
+    try { await host.accept(SSQR.codeFrom(answerEl.value)); say('Connecting...'); }
+    catch (e) { say(e.message || String(e)); }
+  });
+})();
+
+/* ---------------- phone as remote (through the bridge) ---------------- */
+
+// Open this page from the bridge (https://<PC>:8443/app/) and the phone - its browser, or the
+// SpatialStage Rig app with the screen off - can steer the stems from the bridge's own rig
+// page: the bridge keeps each stem's phone offset (phoneRotate) and this page follows it.
+// Which stems move (armed, set to Phone) is decided on the phone. Zero / Centre there puts the
+// offsets back to 0. Served from anywhere else (GitHub Pages, file) there is no bridge: nothing
+// happens here.
+(function () {
+  if (!/^\/app(\/|$)/.test(location.pathname)) return;
+  const status = $('remoteStatus');
+  let ws = null, last = null, retry = null;
+  function show(text) { status.hidden = false; status.textContent = text; }
+  function connect() {
+    clearTimeout(retry);
+    try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host); }
+    catch (e) { retry = setTimeout(connect, 3000); return; }
+    show('Phone remote: connecting to the bridge...');
+    ws.onopen = () => show('Phone remote: connected. Open the bridge address on your phone (or the Rig app) and turn a stem to Phone.');
+    ws.onclose = () => { show('Phone remote: bridge not reachable, retrying...'); last = null; retry = setTimeout(connect, 3000); };
+    ws.onerror = () => {};
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type !== 'state' || !msg.phoneRotate) return;
+      const now = msg.phoneRotate;
+      if (last) {
+        let moved = false;
+        for (const stem of ALL_STEMS) {
+          const v = now[stem];
+          if (typeof v !== 'number' || v === last[stem]) continue;
+          phone[stem] = wrap180(v);
+          motion.setPhone(stem, Math.round(phone[stem]));
+          moved = true;
+        }
+        if (moved) { refreshCards(); requestRadar(); }
+      }
+      last = Object.assign({}, now);   // the first snapshot only records where the phone offsets are
+    };
+  }
+  connect();
+})();
 
 // Dim: a black cover that keeps the page running and the screen awake, so
 // phone control carries on while it looks switched off.
@@ -2422,9 +3062,9 @@ if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); 
     try { localStorage.setItem(KEY, JSON.stringify([...shown])); } catch (e) {}
     apply();
   }
-  function sideOpen() { return activeSpatialStem !== null || activeLedStem !== null; }
+  function sideOpen() { return activeSpatialStem !== null || activeLedStem !== null || activeExtStem !== null; }
   function toggleSide() {
-    if (sideOpen()) { if (activeSpatialStem) openSpatialPanel(activeSpatialStem); if (activeLedStem) openLedPanel(activeLedStem); }
+    if (sideOpen()) { if (activeSpatialStem) openSpatialPanel(activeSpatialStem); if (activeLedStem) openLedPanel(activeLedStem); if (activeExtStem) openExtPanel(activeExtStem); }
     else openSpatialPanel(lastStem || ALL_STEMS[0]);
   }
   function apply() {
