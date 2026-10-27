@@ -501,12 +501,12 @@ function setMuted(stem, m, quiet) {
 
 const spatialPanel = $('spatialPanel'), spatialStemName = $('spatialStemName');
 const sourceRow = $('sourceRow'), mixRow = $('mixRow'), fftSection = $('fftSection'), presetSection = $('presetSection');
-const fftModeRow = $('fftModeRow'), fftSrcRow = $('fftSrcRow'), presetModeRow = $('presetModeRow'), tempoSourceRow = $('tempoSourceRow');
+const fftModeRow = $('fftModeRow'), fftSrcRow = $('fftSrcRow'), presetModeRow = $('presetModeRow');
 const smoothingModeRow = $('smoothingModeRow'), smoothingLabel = $('smoothingLabel'), smoothingHint = $('smoothingHint');
-const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), tempoBlock = $('tempoBlock');
+const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock');
 const ts2El = $('ts2');
 const presetRateEl = $('presetRate'), smoothingSliderEl = $('smoothingSlider');
-const spatialBpmEl = $('spatialBpm'), spatialBaseEl = $('spatialBase');
+const spatialBaseEl = $('spatialBase');
 const beatBlock = $('beatBlock'), beatEveryRow = $('beatEveryRow'), beatFollowRow = $('beatFollowRow');
 const beatSenseRow = $('beatSenseRow'), beatSenseBlock = $('beatSenseBlock'), beatStepsRow = $('beatStepsRow'), beatPatternRow = $('beatPatternRow');
 const beatNudgeEl = $('beatNudge'), beatNudgeOutEl = $('beatNudgeOut'), beatsHintEl = $('beatsHint');
@@ -634,12 +634,10 @@ bindSegRow(fftSrcRow, (v) => {
 bindSegRow(presetModeRow, (v) => {
   const stem = activeSpatialStem;
   if (!stem) return;
-  if (v < 0) setSourceOn(stem, 'preset', false);
-  else { sendSpatial(stem, 'presetMode', v); if (presetWeight(spatial[stem]) <= W_ON) setSourceOn(stem, 'preset', true); }
+  sendSpatial(stem, 'presetMode', v);
   refreshSpatialPanel();
 });
 bindSegRow(smoothingModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'smoothingMode', v); refreshSpatialPanel(); } });
-bindSegRow(tempoSourceRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'tempoSource', v); refreshSpatialPanel(); } });
 
 function wireWeightSlider(el, out, apply) {
   el.addEventListener('input', () => {
@@ -662,12 +660,6 @@ spatialBaseEl.addEventListener('input', () => {
   if (!stem) return;
   $('spatialBaseOut').textContent = Math.round(Number(spatialBaseEl.value)) + '°';
   placeStem(stem, Number(spatialBaseEl.value));
-});
-spatialBpmEl.addEventListener('change', () => {
-  if (!activeSpatialStem) return;
-  const v = Math.max(20, Math.min(300, Number(spatialBpmEl.value) || 120));
-  spatialBpmEl.value = v; // show what was actually applied, not the typo
-  sendSpatial(activeSpatialStem, 'tempoBpm', v);
 });
 
 function openSpatialPanel(stem) {
@@ -698,7 +690,7 @@ function syncSideCol() {
 // Which choices are lit and which sub-rows are shown. Only what is actually
 // shaping the stem's motion is highlighted: an FFT or preset source with no
 // weight in the blend shows "Off", and the rows that only matter for it
-// (audio source, rate, tempo) are hidden until it is on.
+// (audio source, rate) are hidden until it is on.
 function refreshSpatialRows() {
   if (!activeSpatialStem) return;
   const st = spatial[activeSpatialStem];
@@ -714,8 +706,7 @@ function refreshSpatialRows() {
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
   setSegActive(fftSrcRow, fftOn && st.fftMode === 6 ? st.beatSrc : st.fftSrc);
   fftMixBtn.hidden = !(fftOn && st.fftMode === 6);
-  setSegActive(presetModeRow, presetOn ? st.presetMode : -1);
-  setSegActive(tempoSourceRow, st.tempoSource);
+  setSegActive(presetModeRow, st.presetMode >= 0.5 ? 1 : 0);
   const levelMode = st.smoothingMode === 1 || st.smoothingMode === 2;
   setSegActive(smoothingModeRow, st.smoothingMode || 0);
   smoothingLabel.textContent = levelMode ? 'Max' : 'Amount';
@@ -738,7 +729,6 @@ function refreshSpatialRows() {
     beatsHintEl.textContent = beatsHintText(st);
   }
   presetRateBlock.hidden = !presetOn;
-  tempoBlock.hidden = !(presetOn && st.presetMode === 2);
 }
 
 // Sound events fold away: the section is long and most stems never use it.
@@ -757,30 +747,11 @@ function refreshSpatialPanel() {
   if (document.activeElement !== ts2El) ts2El.value = mix;
   $('ts2Out').textContent = mix.toFixed(2);
   presetRateEl.value = st.presetRate; $('presetRateOut').textContent = st.presetRate.toFixed(2);
-  spatialBpmEl.value = st.tempoBpm;
   const pos = Math.round(wrap180(base[activeSpatialStem] + st.base));
   if (document.activeElement !== spatialBaseEl) spatialBaseEl.value = pos;
   $('spatialBaseOut').textContent = pos + '°';
   smoothingSliderEl.value = st.smoothing; $('smoothingOut').textContent = st.smoothing.toFixed(2);
-  refreshTempoHint();
   refreshEventRows();
-}
-
-// Under the tempo row: what the Tempo-Sync motion is actually following.
-const tempoHint = $('tempoHint');
-function refreshTempoHint() {
-  const st = activeSpatialStem && spatial[activeSpatialStem];
-  let t = '';
-  if (st && st.tempoSource === 1) {
-    const clock = motion.midiClock;
-    if (!navigator.requestMIDIAccess) t = 'MIDI clock needs Chrome or Edge (Web MIDI) - using the manual BPM above.';
-    else if (clock.bpm) t = 'Following MIDI clock: ' + clock.bpm.toFixed(1) + ' BPM';
-    else t = 'Waiting for MIDI clock... using the manual BPM above until it arrives.';
-  } else if (st && st.tempoSource === 2) {
-    t = 'Ableton Link is not implemented yet (on either rig) - using the manual BPM above.';
-  }
-  if (tempoHint.textContent !== t) tempoHint.textContent = t;
-  tempoHint.hidden = !t;
 }
 
 /* ---------------- sound events (js/events.js) ---------------- */
@@ -1266,14 +1237,13 @@ radar.addEventListener('touchstart', (ev) => {
 }, { passive: false });
 
 // Redraw the radar, dial pointers and level meters at 20 Hz; the measured
-// MIDI clock tempo and the level-driven smoothing value twice a second
+// level-driven smoothing value twice a second
 // while the panel shows them.
 let tickN = 0;
 motion.onTick = () => {
   if ((++tickN & 1) === 0) { requestRadar(); if (activeSpatialStem) refreshEventNow(); }
   if (tickN % 20 === 0 && activeSpatialStem) {
     const st = spatial[activeSpatialStem];
-    if (st.tempoSource === 1) refreshTempoHint();
     if (st.smoothingMode) refreshSpatialRows();
   }
 };

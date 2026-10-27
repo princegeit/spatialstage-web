@@ -42,34 +42,6 @@
     return Math.atan2(y, x) / DEG;
   }
 
-  // tempo-source.pd's MIDI clock branch, shared by every stem the way the
-  // Pd rig shares one [midirealtimein]: 24 ticks per quarter, BPM measured
-  // per full quarter to average out per-tick jitter, 20-300 sanity window.
-  const midiClock = { bpm: null, ticks: 0, lastQuarterAt: 0, available: false, started: false };
-  function startMidiClock() {
-    if (midiClock.started) return;
-    midiClock.started = true;
-    if (!navigator.requestMIDIAccess) return;
-    navigator.requestMIDIAccess().then((access) => {
-      midiClock.available = true;
-      const bind = (input) => {
-        input.onmidimessage = (e) => {
-          if (e.data[0] !== 0xF8) return;
-          midiClock.ticks = (midiClock.ticks + 1) % 24;
-          if (midiClock.ticks !== 0) return;
-          const now = performance.now();
-          if (midiClock.lastQuarterAt) {
-            const bpm = 60000 / (now - midiClock.lastQuarterAt + 0.0001);
-            if (bpm > 20 && bpm < 300) midiClock.bpm = bpm;
-          }
-          midiClock.lastQuarterAt = now;
-        };
-      };
-      access.inputs.forEach(bind);
-      access.onstatechange = (e) => { if (e.port.type === 'input' && e.port.state === 'connected') bind(e.port); };
-    }).catch(() => {});
-  }
-
   // ---- Beat steps (fftMode 6): ports of bridge/server.js's beatAzTick helpers ----
   const BEAT_GATE_LEVEL = 45;          // source quieter than this (env~ dB): hold the last position
   const BEAT_LEAD_MS = 25;             // one motion tick (the rig's is 10 ms + OSC hop): the Nudge fine-tunes it
@@ -155,7 +127,7 @@
       this.phone = 0;          // degrees, relative to the stem's base (the UI's "rotate")
       this.armed = true;
       this.presetPhase = 0;    // phasor~ 0..1
-      this.presetBeats = 1; this.sineCenter = 0; this.sineWidth = 180;
+      this.sineCenter = 0; this.sineWidth = 180;
       this.finalSmooth = new SmoothAzimuth(1);
       this.pitchSmooth = new SmoothAzimuth(0.15);
       this.bandSmooth = new SmoothAzimuth(0.15);
@@ -177,6 +149,7 @@
         if (param === 'evOn' && v === 0) this.events.det.reset();
         return;
       }
+      if (param === 'presetMode') value = value >= 0.5 ? 1 : 0;   // circle or sine (Tempo-Sync and Off were removed)
       if (Array.isArray(value)) this.params[param] = value.slice();
       else this.params[param] = value;
       if (param === 'smoothing' || param === 'smoothingMode') {
@@ -210,16 +183,11 @@
       const p = this.params;
       this.tickCount++;
 
-      // --- tempo-source ---
-      let bpm = p.tempoBpm;
-      if (p.tempoSource === 1 && midiClock.bpm) bpm = midiClock.bpm;
-      // source 2 (Link) is a stub on both rigs: falls back to manual.
-
-      // --- preset-source ---
-      const rate = (p.presetMode >= 1.5 ? (bpm / 60) / this.presetBeats : p.presetRate) * this.evRate;
+      // --- preset-source: 0 circle, 1 sine ---
+      const rate = p.presetRate * this.evRate;
       this.presetPhase = (this.presetPhase + rate * dt) % 1;
       let presetAz;
-      if (p.presetMode >= 0.5 && p.presetMode < 1.5) {
+      if (p.presetMode >= 0.5) {
         presetAz = this.sineCenter + (this.sineWidth / 2) * Math.sin(2 * Math.PI * this.presetPhase);
       } else {
         presetAz = (this.presetPhase - 0.5) * 360;
@@ -443,7 +411,6 @@
     setArmed(stem, on) { this.stems[stem].armed = !!on; }
     setParam(stem, param, value) {
       this.stems[stem].set(param, value);
-      if (param === 'tempoSource' && value === 1) startMidiClock();
     }
     snapshot() {
       const o = {};
@@ -453,7 +420,6 @@
     restore(snap) {
       for (const s in snap) if (this.stems[s]) for (const k in snap[s]) this.setParam(s, k, snap[s][k]);
     }
-    get midiClock() { return midiClock; }
   }
 
   Motion.peakTimes = peakTimes;   // for the panel's hint

@@ -106,7 +106,6 @@
      already hit once with a nowrap song title's min-width:auto. */
   .weight-row input[type=range] { margin-top: 0; flex: 1; min-width: 0; }
   .weight-row output { font-size: 0.64rem; color: #ccc; width: 34px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
-  #spatialBpm { width: 70px; background: #1c1c1c; color: #eee; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px; font-size: 0.8rem; }
   /* --- sound events (js/events.js) --- */
   .ev-section { margin: 14px 0 4px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); }
   .ev-now { display: flex; align-items: center; gap: 10px; margin: 2px 0 8px; }
@@ -639,24 +638,11 @@
       <div id="presetSection">
       <div class="field-label">Preset motion</div>
       <div class="seg-row" id="presetModeRow">
-        <button class="seg-btn off" data-value="-1">Off</button>
         <button class="seg-btn" data-value="0">Circle</button>
         <button class="seg-btn" data-value="1">Sine</button>
-        <button class="seg-btn" data-value="2">Tempo-Sync</button>
       </div>
       <div id="presetRateBlock">
         <div class="weight-row"><label>Rate</label><input type="range" id="presetRate" min="0" max="1" step="0.01"><output id="presetRateOut"></output></div>
-      </div>
-
-      <div id="tempoBlock">
-        <div class="field-label">Tempo source (for Tempo-Sync motion)</div>
-        <div class="seg-row" id="tempoSourceRow">
-          <button class="seg-btn" data-value="0">Manual</button>
-          <button class="seg-btn" data-value="1">MIDI Clock</button>
-          <button class="seg-btn" data-value="2">Link</button>
-        </div>
-        <div class="weight-row"><label>BPM</label><input type="number" id="spatialBpm" min="20" max="300" step="1"></div>
-        <div class="hint left" id="tempoHint" hidden></div>
       </div>
 
       </div>

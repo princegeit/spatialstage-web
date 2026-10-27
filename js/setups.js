@@ -66,6 +66,7 @@
       d.fftSrc = Math.max(0, Math.min(S.STEMS.length - 1, Math.round(d.fftSrc)));
       d.smoothing = Math.max(0.01, Math.min(1, d.smoothing));
       d.tempoBpm = Math.max(20, Math.min(300, d.tempoBpm));
+      d.presetMode = d.presetMode >= 0.5 ? 1 : 0;   // an old setup's Tempo-Sync plays as a circle
       if ([0, 1, 2].includes(Math.round(num(sp.smoothingMode, 0)))) d.smoothingMode = Math.round(num(sp.smoothingMode, 0));
       // Beat steps settings, kept only when valid (the same checks as the bridge's BEAT_PARAMS).
       const pick = (k, ok) => { const v = Math.round(num(sp[k], d[k])); if (ok(v)) d[k] = v; };
