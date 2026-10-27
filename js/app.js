@@ -672,8 +672,6 @@ function openSpatialPanel(stem) {
   activeSpatialStem = (activeSpatialStem === stem) ? null : stem;
   spatialPanel.hidden = activeSpatialStem === null;
   if (activeSpatialStem) {
-    if (activeLedStem) openLedPanel(activeLedStem);   // one panel at a time
-    if (activeExtStem) openExtPanel(activeExtStem);
     spatialStemName.textContent = stemTitle(stem);
     spatialStemName.style.color = STEM_COLOR[stem];
     refreshSpatialPanel();
@@ -2358,8 +2356,6 @@ async function fillDevices() {
 function openExtPanel(stem) {
   activeExtStem = (activeExtStem === stem) ? null : stem;
   if (activeExtStem) {
-    if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
-    if (activeLedStem) openLedPanel(activeLedStem);
     $('extStemName').textContent = stemTitle(stem);
     $('extStemName').style.color = STEM_COLOR[stem];
     fillDevices();
@@ -2436,8 +2432,6 @@ function openLedPanel(stem) {
   activeLedStem = (activeLedStem === stem) ? null : stem;
   ledPanel.hidden = activeLedStem === null;
   if (activeLedStem) {
-    if (activeSpatialStem) openSpatialPanel(activeSpatialStem);   // one panel at a time
-    if (activeExtStem) openExtPanel(activeExtStem);
     $('ledStemName').textContent = stemTitle(stem);
     refreshLedPanel();
   }
