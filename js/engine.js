@@ -44,7 +44,7 @@
       this.panMode = 'pd';                 // 'pd' | 'hrtf'
       this.lrSwap = false;
       this.quad = false;
-      this.volume = {}; this.muted = {};
+      this.volume = {}; this.muted = {}; this.solo = new Set();
       for (const s of stems) { this.volume[s] = 1; this.muted[s] = false; }
       this.masterVolume = 0.4;
       this.leak = 0;                       // 0..1: how much of every stem also reaches every speaker equally
@@ -360,13 +360,19 @@
     levelOf(stem) {
       if (!this.nodes[stem] || !this.playing) return 0;
       const v = (this.envDb(stem) - 40) / 60;
-      return Math.max(0, Math.min(1, v)) * (this.muted[stem] ? 0 : this.volume[stem]);
+      return Math.max(0, Math.min(1, v)) * (this.silent(stem) ? 0 : this.volume[stem]);
     }
 
     setVolume(stem, v) { this.volume[stem] = v; if (this.ctx) this._applyLevel(stem, false); }
     setMuted(stem, m) { this.muted[stem] = !!m; if (this.ctx) this._applyLevel(stem, false); }
+    // Muted, or something else is soloed and this stem is not.
+    silent(stem) { return !!this.muted[stem] || (this.solo.size > 0 && !this.solo.has(stem)); }
+    setSolo(stems) {
+      this.solo = new Set(stems);
+      if (this.ctx) for (const s in this.nodes) if (this.nodes[s]) this._applyLevel(s, false);
+    }
     _applyLevel(stem, immediate) {
-      const g = BRANCH_GAIN * (this.muted[stem] ? 0 : this.volume[stem]);
+      const g = BRANCH_GAIN * (this.silent(stem) ? 0 : this.volume[stem]);
       for (const p of [this.nodes[stem].out.gain, this.nodes[stem].qout.gain]) {
         if (immediate) p.value = g; else p.setTargetAtTime(g, this.ctx.currentTime, 0.02);
       }

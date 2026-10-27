@@ -154,7 +154,10 @@ function buildCards() {
       '<div class="card-meta">' +
         '<span class="stem-az">0&deg;</span>' +
         '<button class="tog-btn arm-btn" title="Armed: follows the rotate slider, phone and hands. Unarmed: parks at centre.">ARM</button>' +
+      '</div>' +
+      '<div class="card-row2">' +
         '<button class="tog-btn mute-btn">MUTE</button>' +
+        '<button class="tog-btn solo-btn" title="Solo: hear only the soloed stems (several can be soloed). Mute and fader are left as they are.">SOLO</button>' +
       '</div>' +
       '<div class="card-row2">' +
         '<button class="tog-btn phone-btn" title="Phone motion turns this stem (when armed)">PHONE</button>' +
@@ -180,6 +183,7 @@ function buildCards() {
       cap: card.querySelector('.fader-cap'),
       arm: card.querySelector('.arm-btn'),
       mute: card.querySelector('.mute-btn'),
+      solo: card.querySelector('.solo-btn'),
       phone: card.querySelector('.phone-btn'),
       cam: card.querySelector('.cam-btn'),
       spatial: card.querySelector('.spatial-btn'),
@@ -189,6 +193,7 @@ function buildCards() {
       note: card.querySelector('.stem-note'),
     };
     cards[stem].mute.addEventListener('click', () => setMuted(stem, !mutedStems.has(stem)));
+    cards[stem].solo.addEventListener('click', () => setSolo(stem, !soloStems.has(stem)));
     cards[stem].arm.addEventListener('click', () => setArmed(stem, !selectedStems.has(stem)));
     cards[stem].phone.addEventListener('click', () => openMotion(stem, 'phone'));
     cards[stem].cam.addEventListener('click', () => openMotion(stem, 'cam'));
@@ -293,6 +298,8 @@ function refreshCards() {
     k.fader.setAttribute('aria-valuenow', Math.round(v * 100));
     const m = mutedStems.has(stem);
     k.mute.classList.toggle('muted', m);
+    k.solo.classList.toggle('on', soloStems.has(stem));
+    k.solo.setAttribute('aria-pressed', soloStems.has(stem));
     k.mute.setAttribute('aria-pressed', m);
     k.card.classList.toggle('muted', m);
     const gone = stemAbsent(stem);
@@ -484,6 +491,16 @@ function bindFader(el, stem) {
     else return;
     ev.preventDefault();
   });
+}
+
+// Solo: only the soloed stems are heard (the engine silences the rest without touching their mute
+// or fader). Not part of a setup.
+const soloStems = new Set();
+function setSolo(stem, on) {
+  if (on) soloStems.add(stem); else soloStems.delete(stem);
+  engine.setSolo(soloStems);
+  refreshCards();
+  buzz(15);
 }
 
 function setMuted(stem, m, quiet) {
