@@ -153,8 +153,8 @@ and `serve.bat` / `publish.bat` run it so the zip always matches the code.
 | Unarmed stem | Parks at its base azimuth | Parks at centre (0°, straight ahead) |
 | FFT pitch mode | `sigmund~` | Autocorrelation pitch tracker (same 36..84 MIDI mapping, median-of-3) |
 | FFT onset mode | `bonk~` | Energy-jump onset detector (same velocity→azimuth formula) |
-| FFT precalc mode | Table from `precompute_fft_envelope.py` | Computed the first time a stem uses it (same envelope) |
-| Tempo: MIDI clock | `midirealtimein` | Web MIDI (Chrome/Edge only) |
+| FFT precalc mode (no button any more; Follow / Sections replaced it) | Table from `precompute_fft_envelope.py` | Computed the first time a stem uses it (same envelope) |
+| Tempo: MIDI clock (Tempo-Sync preset removed; the Pd patch still contains it, unused) | `midirealtimein` | not ported any more |
 | Tempo: Link | stub | stub |
 | Songs | Streamed from disk by `readsf~` | Decoded fully into memory when selected, with progress shown (~2 MB/s of song per six stems; the previous song is freed first, so only one is ever in memory) |
 | Playlist | Drag to reorder, `bridge/playlist.json` | Drag to reorder, remembered in the browser |
