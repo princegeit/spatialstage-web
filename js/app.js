@@ -50,23 +50,26 @@ for (const s of ALL_STEMS) ctl[s] = 'phone';
 // The paired phones (filled in by the pairing block further down): the spatial menu's phone
 // picker reads the list and assigns a stem to one phone, or to none ("any phone").
 const phoneHub = { phones: [], assignStem() {} };
+let phonePickSig = '';
 function renderPhonePick() {
   const stem = activeSpatialStem, block = $('phonePickBlock'), row = $('phonePickRow');
   block.hidden = !stem || ctl[stem] !== 'phone';
-  if (block.hidden) return;
-  row.textContent = '';
+  if (block.hidden) { phonePickSig = ''; return; }
   const owner = phoneHub.phones.find((p) => p.stems && p.stems.includes(stem)) || null;
-  const add = (label, target) => {
+  // Rebuilt only when something changed: this runs on every panel refresh, and replacing the
+  // buttons under a finger would swallow the tap.
+  const sig = stem + '|' + phoneHub.phones.map((p) => p.name + (p === owner ? '*' : '')).join(',');
+  if (sig === phonePickSig) return;
+  phonePickSig = sig;
+  row.textContent = '';
+  for (const p of phoneHub.phones) {
     const b = document.createElement('button');
-    b.className = 'seg-btn' + (owner === target ? ' active' : '');
-    b.textContent = label;
-    b.addEventListener('click', () => phoneHub.assignStem(stem, target));
+    b.className = 'seg-btn' + (owner === p ? ' active' : '');
+    b.textContent = p.name;
+    b.addEventListener('click', () => phoneHub.assignStem(stem, owner === p ? null : p));
     row.appendChild(b);
-  };
-  for (const p of phoneHub.phones) add(p.name, owner === p ? null : p);
-  $('phonePickHint').textContent = phoneHub.phones.length
-    ? ''
-    : 'No phone connected yet. Use "Pair a phone" in the Control window.';
+  }
+  $('phonePickHint').textContent = phoneHub.phones.length ? '' : 'No phone connected yet. Use "Pair a phone" in the Control window.';
 }
 const savedBlend = {};
 let songs = [], songIndex = -1;
