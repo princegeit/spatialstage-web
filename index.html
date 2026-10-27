@@ -561,24 +561,16 @@
       <div class="weight-row"><label id="smoothingLabel">Amount</label><input type="range" id="smoothingSlider" min="0.02" max="1" step="0.01"><output id="smoothingOut"></output></div>
       <div class="hint left" id="smoothingHint" hidden></div>
 
-      <div class="field-label">Blend mode</div>
-      <div class="seg-row" id="blendModeRow">
-        <button class="seg-btn" data-value="0">Two-Stage</button>
-        <button class="seg-btn" data-value="1">Three-Way</button>
+      <div class="field-label">Motion from</div>
+      <div class="seg-row" id="sourceRow">
+        <button class="seg-btn" data-value="0">FFT</button>
+        <button class="seg-btn" data-value="1">Presets</button>
+        <button class="seg-btn" data-value="2">Mixed</button>
       </div>
-      <div id="blendTwoRow">
-        <div class="weight-row"><label>Ph&harr;FFT</label><input type="range" id="ts1" min="0" max="1" step="0.01"><output id="ts1Out"></output></div>
-        <div class="weight-row"><label>&harr;Preset</label><input type="range" id="ts2" min="0" max="1" step="0.01"><output id="ts2Out"></output></div>
-      </div>
-      <div id="blendThreeRow" hidden>
-        <div class="weight-row"><label>Phone</label><input type="range" id="w1" min="0" max="1" step="0.01"><output id="w1Out"></output></div>
-        <div class="weight-row"><label>FFT</label><input type="range" id="w2" min="0" max="1" step="0.01"><output id="w2Out"></output></div>
-        <div class="weight-row"><label>Preset</label><input type="range" id="w3" min="0" max="1" step="0.01"><output id="w3Out"></output></div>
+      <div id="mixRow" hidden>
+        <div class="weight-row"><label>FFT&harr;Preset</label><input type="range" id="ts2" min="0" max="1" step="0.01"><output id="ts2Out"></output></div>
       </div>
 
-      <!-- "Off" is a real choice here: a source whose blend weight is 0
-           contributes nothing, so no mode of it is highlighted. Picking a
-           mode turns the source on; Off sets its weight to 0. -->
       <div class="field-label">FFT source (drives azimuth from this stem's own audio)</div>
       <div class="seg-row" id="fftModeRow">
         <button class="seg-btn off" data-value="-1">Off</button>

@@ -498,11 +498,11 @@ function setMuted(stem, m, quiet) {
 /* ---------------- spatial (motion) advanced panel ---------------- */
 
 const spatialPanel = $('spatialPanel'), spatialStemName = $('spatialStemName');
-const blendModeRow = $('blendModeRow'), blendTwoRow = $('blendTwoRow'), blendThreeRow = $('blendThreeRow');
+const sourceRow = $('sourceRow'), mixRow = $('mixRow');
 const fftModeRow = $('fftModeRow'), fftSrcRow = $('fftSrcRow'), presetModeRow = $('presetModeRow'), tempoSourceRow = $('tempoSourceRow');
 const smoothingModeRow = $('smoothingModeRow'), smoothingLabel = $('smoothingLabel'), smoothingHint = $('smoothingHint');
 const fftSrcBlock = $('fftSrcBlock'), presetRateBlock = $('presetRateBlock'), tempoBlock = $('tempoBlock');
-const ts1El = $('ts1'), ts2El = $('ts2'), w1El = $('w1'), w2El = $('w2'), w3El = $('w3');
+const ts2El = $('ts2');
 const presetRateEl = $('presetRate'), smoothingSliderEl = $('smoothingSlider');
 const spatialBpmEl = $('spatialBpm'), spatialBaseEl = $('spatialBase');
 const beatBlock = $('beatBlock'), beatSrcRow = $('beatSrcRow'), beatEveryRow = $('beatEveryRow'), beatFollowRow = $('beatFollowRow');
@@ -571,7 +571,15 @@ function setSourceOn(stem, which, on) {
 }
 
 bindSegRow($('ctlRow'), (v) => { if (activeSpatialStem) setControl(activeSpatialStem, ctlName[v]); });
-bindSegRow(blendModeRow, (v) => { if (activeSpatialStem) { sendSpatial(activeSpatialStem, 'blendMode', v); refreshSpatialPanel(); } });
+// Motion from: FFT, Presets or both. Always the two-stage blend with the phone share at 0
+// (blendWeights2 = [phone<->FFT, (phone+FFT)<->preset]): FFT [1,0], Presets [0,1], Mixed [1,0.5].
+bindSegRow(sourceRow, (v) => {
+  const stem = activeSpatialStem;
+  if (!stem) return;
+  sendSpatial(stem, 'blendMode', 0);
+  sendSpatial(stem, 'blendWeights2', v === 0 ? [1, 0] : v === 1 ? [0, 1] : [1, 0.5]);
+  refreshSpatialPanel();
+});
 bindSegRow(fftModeRow, (v) => {
   const stem = activeSpatialStem;
   if (!stem) return;
@@ -649,11 +657,7 @@ function wireWeightSlider(el, out, apply) {
 const weightAt = (param, i) => (stem, v) => {
   const arr = spatial[stem][param].slice(); arr[i] = v; sendSpatial(stem, param, arr);
 };
-wireWeightSlider(ts1El, $('ts1Out'), weightAt('blendWeights2', 0));
-wireWeightSlider(ts2El, $('ts2Out'), weightAt('blendWeights2', 1));
-wireWeightSlider(w1El, $('w1Out'), weightAt('blendWeights3', 0));
-wireWeightSlider(w2El, $('w2Out'), weightAt('blendWeights3', 1));
-wireWeightSlider(w3El, $('w3Out'), weightAt('blendWeights3', 2));
+wireWeightSlider(ts2El, $('ts2Out'), (stem, v) => { sendSpatial(stem, 'blendMode', 0); sendSpatial(stem, 'blendWeights2', [1, v]); });
 wireWeightSlider(presetRateEl, $('presetRateOut'), (stem, v) => sendSpatial(stem, 'presetRate', v));
 wireWeightSlider(smoothingSliderEl, $('smoothingOut'), (stem, v) => sendSpatial(stem, 'smoothing', v));
 // Shown as the stem's actual direction (layout azimuth + reference offset),
@@ -708,7 +712,8 @@ function refreshSpatialRows() {
   renderPhonePick();
   for (const [id, mode] of [['secPhone', 'phone'], ['secCam', 'cam'], ['secSpatial', 'spatial']]) document.getElementById(id).hidden = ctl[activeSpatialStem] !== mode;
   const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
-  setSegActive(blendModeRow, st.blendMode);
+  setSegActive(sourceRow, fftOn && presetOn ? 2 : presetOn ? 1 : fftOn ? 0 : -1);
+  mixRow.hidden = !(fftOn && presetOn);
   setSegActive(fftModeRow, fftOn ? st.fftMode : -1);
   setSegActive(fftSrcRow, st.fftSrc);
   setSegActive(presetModeRow, presetOn ? st.presetMode : -1);
@@ -739,19 +744,15 @@ function refreshSpatialRows() {
   }
   presetRateBlock.hidden = !presetOn;
   tempoBlock.hidden = !(presetOn && st.presetMode === 2);
-  blendTwoRow.hidden = st.blendMode !== 0;
-  blendThreeRow.hidden = st.blendMode !== 1;
 }
 
 function refreshSpatialPanel() {
   if (!activeSpatialStem) return;
   const st = spatial[activeSpatialStem];
   refreshSpatialRows();
-  ts1El.value = st.blendWeights2[0]; $('ts1Out').textContent = st.blendWeights2[0].toFixed(2);
-  ts2El.value = st.blendWeights2[1]; $('ts2Out').textContent = st.blendWeights2[1].toFixed(2);
-  w1El.value = st.blendWeights3[0]; $('w1Out').textContent = st.blendWeights3[0].toFixed(2);
-  w2El.value = st.blendWeights3[1]; $('w2Out').textContent = st.blendWeights3[1].toFixed(2);
-  w3El.value = st.blendWeights3[2]; $('w3Out').textContent = st.blendWeights3[2].toFixed(2);
+  const fw = fftWeight(st), pw = presetWeight(st), mix = fw + pw > 0 ? pw / (fw + pw) : 0.5;   // share of the preset in the FFT/preset mix
+  if (document.activeElement !== ts2El) ts2El.value = mix;
+  $('ts2Out').textContent = mix.toFixed(2);
   presetRateEl.value = st.presetRate; $('presetRateOut').textContent = st.presetRate.toFixed(2);
   spatialBpmEl.value = st.tempoBpm;
   const pos = Math.round(wrap180(base[activeSpatialStem] + st.base));
