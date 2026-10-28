@@ -81,6 +81,10 @@ let seeking = false, seekDirty = false;
 const spatial = {};
 for (const s of ALL_STEMS) spatial[s] = motion.stems[s].params;
 let activeSpatialStem = null, activeLedStem = null, activeExtStem = null;
+// The Effects menu (js/effects.js): each stem's effect and the motion that turns its knob.
+const fxSt = {};
+for (const s of ALL_STEMS) fxSt[s] = motion.fx[s].params;
+let activeFxStem = null;
 let lastSliderValue = 0;
 let dragging = null;
 const cards = {};
@@ -171,6 +175,7 @@ function buildCards() {
       '<div class="card-row2">' +
         '<button class="tog-btn led-btn" hidden><span class="swatch"></span>LED</button>' +
         '<button class="tog-btn ext-btn" title="External input: sound from a mic or line-in into this stem">EXT</button>' +
+        '<button class="tog-btn fx-btn" title="Effects: reverb, echo, flanger, filters... with the knob turned by motion">FX</button>' +
       '</div>';
     stemGrid.appendChild(card);
     cards[stem] = {
@@ -190,9 +195,11 @@ function buildCards() {
       spatial: card.querySelector('.spatial-btn'),
       led: card.querySelector('.led-btn'),
       ext: card.querySelector('.ext-btn'),
+      fx: card.querySelector('.fx-btn'),
       level: card.querySelector('.level-fill'),
       note: card.querySelector('.stem-note'),
     };
+    cards[stem].fx.addEventListener('click', () => openFxPanel(stem));
     cards[stem].mute.addEventListener('click', () => setMuted(stem, !mutedStems.has(stem)));
     cards[stem].solo.addEventListener('click', () => setSolo(stem, !soloStems.has(stem)));
     cards[stem].arm.addEventListener('click', () => setArmed(stem, !selectedStems.has(stem)));
@@ -282,6 +289,10 @@ function refreshCards() {
     k.ext.classList.toggle('open', stem === activeExtStem);
     k.ext.title = liveOn ? 'External input on: ' + (liveSettings[stem].label || 'default input') + ', channels ' + (2 * liveSettings[stem].pair - 1) + '-' + (2 * liveSettings[stem].pair)
                          : 'External input: sound from a mic or line-in into this stem (off)';
+    const fxOn = fxSt[stem].fx > 0;
+    k.fx.classList.toggle('on', fxOn);
+    k.fx.classList.toggle('open', stem === activeFxStem);
+    k.fx.title = fxOn ? 'Effect: ' + SSEffects.LIST[fxSt[stem].fx].name + ' (open the Effects menu)' : 'Effects: reverb, echo, flanger, filters... with the knob turned by motion (off)';
     const armed = selectedStems.has(stem);
     k.sel.setAttribute('opacity', armed ? 1 : 0.12);
     k.arm.classList.toggle('armed', armed);
@@ -343,6 +354,7 @@ function placeStem(stem, deg) {
 // the slider and the radar ring (no `via`) turn every armed stem.
 function rotateArmedBy(d, via, only) {
   if (!d) return;
+  if (via) rotateFxBy(d, via, only);
   for (const stem of selectedStems) {
     if (via && ctl[stem] !== via) continue;
     if (only && !only.includes(stem)) continue;   // a paired phone with its own stems
@@ -703,7 +715,7 @@ $('spatialCloseBtn').addEventListener('click', () => { if (activeSpatialStem) op
 // narrower desktop, a bottom sheet on a phone) so they open beside the cards
 // instead of under all of them.
 function syncSideCol() {
-  const open = activeSpatialStem !== null || activeLedStem !== null || activeExtStem !== null;
+  const open = activeSpatialStem !== null || activeLedStem !== null || activeExtStem !== null || activeFxStem !== null;
   $('sideCol').hidden = !open;
   $('app').classList.toggle('has-side', open);
   if (typeof railSync === 'function') railSync();
@@ -850,6 +862,223 @@ function refreshEventNow() {
   tag.textContent = label || (listening ? (m.armed ? 'listening' : 'not armed') : 'off');
   tag.classList.toggle('live', !!label);
   tag.classList.toggle('flash', !!(ev && ev.flash));
+}
+
+/* ---------------- effects (js/effects.js; motion.js FxMotion; engine.setEffect) ---------------- */
+
+// The Effects menu: Motion control's menu again, but the motion turns an effect's knob on the stem
+// (front = knob at minimum, behind = maximum) and the stem stays where it is. Kept in this browser.
+// The rig page has the same menu, run by the bridge and Pd (bridge/public/index.html).
+const fxPanel = $('fxPanel'), fxTypeRow = $('fxTypeRow'), fxCtlRow = $('fxCtlRow'), fxStemRow = $('fxStemRow');
+const fxSourceRow = $('fxSourceRow'), fxFftModeRow = $('fxFftModeRow'), fxFftSrcRow = $('fxFftSrcRow'), fxPresetModeRow = $('fxPresetModeRow');
+const fxSmoothingModeRow = $('fxSmoothingModeRow');
+const fxBeatRows = { beatEvery: $('fxBeatEveryRow'), beatSteps: $('fxBeatStepsRow'), beatPattern: $('fxBeatPatternRow'), beatFollow: $('fxBeatFollowRow'), beatSense: $('fxBeatSenseRow') };
+const fxMixEl = $('fxMix'), fxTs2El = $('fxTs2'), fxPresetRateEl = $('fxPresetRate'), fxSmoothingEl = $('fxSmoothing'), fxBaseEl = $('fxBase'), fxBeatNudgeEl = $('fxBeatNudge');
+for (const e of SSEffects.LIST) {
+  const b = document.createElement('button');
+  b.className = 'seg-btn'; b.dataset.value = e.id; b.textContent = e.name;
+  fxTypeRow.appendChild(b);
+}
+ALL_STEMS.forEach((s, i) => {
+  const b = document.createElement('button');
+  b.className = 'seg-btn'; b.dataset.value = i; b.textContent = s.charAt(0).toUpperCase() + s.slice(1);
+  fxFftSrcRow.appendChild(b);
+});
+const fxMixBtn = document.createElement('button');
+fxMixBtn.className = 'seg-btn'; fxMixBtn.dataset.value = ALL_STEMS.length; fxMixBtn.textContent = 'Whole mix'; fxMixBtn.hidden = true;
+fxFftSrcRow.appendChild(fxMixBtn);
+
+const fxUses = (stem, via) => fxSt[stem].fx > 0 && fxSt[stem].ctl === via;
+let fxSaveTimer = null;
+function saveFx() { clearTimeout(fxSaveTimer); fxSaveTimer = setTimeout(() => setPref('effects', motion.fxSnapshot()), 300); }
+function sendFx(stem, param, value) {
+  motion.setFxParam(stem, param, value);
+  if (param === 'fx' || param === 'fxMix') engine.setEffect(stem, fxSt[stem].fx, fxSt[stem].fxMix);
+  if (param === 'ctl') motion.setFxPhone(stem, 0);   // a new source starts from the knob's rest
+  saveFx();
+}
+// Restore what this browser had.
+(function () {
+  const saved = pref('effects', null);
+  ALL_STEMS.forEach((s, i) => {
+    const v = SSEffects.normalise(saved && saved[s], i, ALL_STEMS.length);
+    for (const k in v) motion.setFxParam(s, k, v[k]);
+    engine.setEffect(s, v.fx, v.fxMix);
+  });
+})();
+
+// Phone and camera turns (rotateArmedBy with a `via`) also turn the knob of every stem whose
+// effect is set to that source. `only` = the stems a paired phone was given.
+function rotateFxBy(d, via, only) {
+  for (const s of ALL_STEMS) {
+    if (!fxUses(s, via) || (only && !only.includes(s))) continue;
+    const m = motion.fx[s];
+    motion.setFxPhone(s, wrap180(m.phone + d));
+  }
+}
+
+function openFxPanel(stem) {
+  activeFxStem = activeFxStem === stem ? null : stem;
+  fxPanel.hidden = activeFxStem === null;
+  if (activeFxStem) refreshFxPanel();
+  syncSideCol(); refreshCards();
+}
+$('fxCloseBtn').addEventListener('click', () => { if (activeFxStem) openFxPanel(activeFxStem); });
+
+// The stem chips at the top: every stem the song has (and added inputs).
+let fxStemSig = '';
+function renderFxStemRow() {
+  const shown = ALL_STEMS.filter(stemShown);
+  const sig = shown.join(',') + '|' + shown.map((s) => fxSt[s].fx).join(',');
+  if (sig !== fxStemSig) {
+    fxStemSig = sig;
+    fxStemRow.textContent = '';
+    for (const s of shown) {
+      const b = document.createElement('button');
+      b.className = 'seg-btn'; b.dataset.value = s;
+      b.textContent = stemTitle(s) + (fxSt[s].fx ? ' ·' : '');
+      b.title = fxSt[s].fx ? SSEffects.LIST[fxSt[s].fx].name : 'no effect';
+      b.addEventListener('click', () => { activeFxStem = s; refreshFxPanel(); refreshCards(); });
+      fxStemRow.appendChild(b);
+    }
+  }
+  setSegActive(fxStemRow, activeFxStem);
+}
+
+bindSegRow(fxTypeRow, (v) => {
+  const stem = activeFxStem;
+  if (!stem) return;
+  sendFx(stem, 'fx', v);
+  if (v > 0 && !fxSt[stem].ctl) sendFx(stem, 'ctl', 'spatial');   // picking an effect is asking to hear the knob move
+  refreshFxPanel(); refreshCards(); syncSources();
+});
+bindSegRow(fxCtlRow, (v) => {
+  const stem = activeFxStem;
+  if (!stem) return;
+  sendFx(stem, 'ctl', v === 'none' ? null : v);
+  const st = fxSt[stem];
+  if (v === 'spatial' && fftWeight(st) <= W_ON && presetWeight(st) <= W_ON) { sendFx(stem, 'blendMode', 0); sendFx(stem, 'blendWeights2', [0, 1]); }
+  refreshFxPanel(); syncSources();
+});
+fxMixEl.addEventListener('input', () => { if (activeFxStem) { sendFx(activeFxStem, 'fxMix', Number(fxMixEl.value)); $('fxMixOut').textContent = Math.round(fxMixEl.value * 100) + '%'; } });
+fxBaseEl.addEventListener('input', () => { if (activeFxStem) { sendFx(activeFxStem, 'base', Number(fxBaseEl.value)); $('fxBaseOut').textContent = Math.round(fxBaseEl.value) + '°'; } });
+// Motion from / algorithm / source / beats / presets / smoothing: Motion control's rules.
+bindSegRow(fxSourceRow, (v) => {
+  if (!activeFxStem) return;
+  sendFx(activeFxStem, 'blendMode', 0);
+  sendFx(activeFxStem, 'blendWeights2', v === 0 ? [1, 0] : v === 1 ? [0, 1] : [1, 0.5]);
+  refreshFxPanel();
+});
+bindSegRow(fxFftModeRow, (v) => {
+  const stem = activeFxStem;
+  if (!stem) return;
+  const st = fxSt[stem];
+  sendFx(stem, 'fftMode', v);
+  if (fftWeight(st) <= W_ON) sendFx(stem, 'blendWeights2', presetWeight(st) > W_ON ? [1, 0.5] : [1, 0]);
+  if (v === 6) {
+    sendFx(stem, 'blendMode', 0);
+    sendFx(stem, 'blendWeights2', [1, 0]);
+    if (!IS_INPUT.has(ALL_STEMS[st.fftSrc])) sendFx(stem, 'beatSrc', st.fftSrc);
+    engine.beatsOf();
+  }
+  refreshFxPanel();
+});
+bindSegRow(fxFftSrcRow, (v) => {
+  const stem = activeFxStem;
+  if (!stem) return;
+  if (v < ALL_STEMS.length) sendFx(stem, 'fftSrc', v);
+  if (v >= ALL_STEMS.length || !IS_INPUT.has(ALL_STEMS[v])) sendFx(stem, 'beatSrc', v);
+  refreshFxPanel();
+});
+for (const param in fxBeatRows) bindSegRow(fxBeatRows[param], (v) => { if (activeFxStem) { sendFx(activeFxStem, param, v); refreshFxPanel(); } });
+fxBeatNudgeEl.addEventListener('input', () => { if (activeFxStem) { sendFx(activeFxStem, 'beatNudge', Number(fxBeatNudgeEl.value)); $('fxBeatNudgeOut').textContent = fxBeatNudgeEl.value + ' ms'; } });
+bindSegRow(fxPresetModeRow, (v) => { if (activeFxStem) { sendFx(activeFxStem, 'presetMode', v); refreshFxPanel(); } });
+bindSegRow(fxSmoothingModeRow, (v) => { if (activeFxStem) { sendFx(activeFxStem, 'smoothingMode', v); refreshFxPanel(); } });
+for (const [el, out, apply] of [
+  [fxTs2El, 'fxTs2Out', (s, v) => { sendFx(s, 'blendMode', 0); sendFx(s, 'blendWeights2', [1, v]); }],
+  [fxPresetRateEl, 'fxPresetRateOut', (s, v) => sendFx(s, 'presetRate', v)],
+  [fxSmoothingEl, 'fxSmoothingOut', (s, v) => sendFx(s, 'smoothing', v)],
+]) {
+  el.addEventListener('input', () => {
+    if (!activeFxStem) return;
+    apply(activeFxStem, Number(el.value));
+    $(out).textContent = Number(el.value).toFixed(2);
+    refreshFxPanel();
+  });
+}
+
+const FX_CTL_HINT = {
+  spatial: 'The FFT / preset motion below turns the knob, the way it would move a stem.',
+  phone: 'Turning the phone turns the knob: where it pointed when this was picked = Rest, half a turn round = the other end. Sensor, direction and which phone: Motion control (PHONE on a stem card).',
+  cam: 'A pinch in empty space (or "Open hand steers") turns the knob as it would turn the stems. The camera view and gesture: Motion control (CAM on a stem card).',
+  none: 'No motion: the knob stays where Rest puts it.',
+};
+function refreshFxPanel() {
+  const stem = activeFxStem;
+  if (!stem) return;
+  const st = fxSt[stem], def = SSEffects.LIST[st.fx];
+  $('fxStemName').textContent = stemTitle(stem) + ' · ' + (st.fx ? def.name.toUpperCase() : 'NO EFFECT');
+  $('fxStemName').style.color = STEM_COLOR[stem];
+  renderFxStemRow();
+  setSegActive(fxTypeRow, st.fx);
+  setSegActive(fxCtlRow, st.ctl || 'none');
+  $('fxCtlHint').textContent = FX_CTL_HINT[st.ctl || 'none'];
+  if (document.activeElement !== fxMixEl) fxMixEl.value = st.fxMix;
+  $('fxMixOut').textContent = Math.round(st.fxMix * 100) + '%';
+  if (document.activeElement !== fxBaseEl) fxBaseEl.value = Math.round(st.base);
+  $('fxBaseOut').textContent = Math.round(st.base) + '°';
+  $('fxSecSpatial').hidden = st.ctl !== 'spatial';
+  const fftOn = fftWeight(st) > W_ON, presetOn = presetWeight(st) > W_ON;
+  setSegActive(fxSourceRow, fftOn && presetOn ? 2 : presetOn ? 1 : fftOn ? 0 : -1);
+  $('fxMixRow').hidden = !(fftOn && presetOn);
+  $('fxFftSection').hidden = presetOn && !fftOn;
+  $('fxPresetSection').hidden = fftOn && !presetOn;
+  $('fxPresetRateBlock').hidden = !presetOn;
+  setSegActive(fxFftModeRow, fftOn ? st.fftMode : -1);
+  setSegActive(fxFftSrcRow, fftOn && st.fftMode === 6 ? st.beatSrc : st.fftSrc);
+  fxMixBtn.hidden = !(fftOn && st.fftMode === 6);
+  setSegActive(fxPresetModeRow, st.presetMode);
+  const fw = fftWeight(st), pw = presetWeight(st), share = fw + pw > 0 ? pw / (fw + pw) : 0.5;
+  if (document.activeElement !== fxTs2El) fxTs2El.value = share;
+  $('fxTs2Out').textContent = share.toFixed(2);
+  if (document.activeElement !== fxPresetRateEl) fxPresetRateEl.value = st.presetRate;
+  $('fxPresetRateOut').textContent = st.presetRate.toFixed(2);
+  const levelMode = st.smoothingMode === 1 || st.smoothingMode === 2;
+  setSegActive(fxSmoothingModeRow, st.smoothingMode);
+  $('fxSmoothingLabel').textContent = levelMode ? 'Max' : 'Amount';
+  if (document.activeElement !== fxSmoothingEl) fxSmoothingEl.value = st.smoothing;
+  $('fxSmoothingOut').textContent = st.smoothing.toFixed(2);
+  $('fxSmoothingHint').hidden = !levelMode;
+  if (levelMode) $('fxSmoothingHint').textContent = (st.smoothingMode === 1 ? 'Quiet = smooth glide, loud = up to Max.' : 'Loud = smooth glide, quiet = up to Max.') + ' Now ' + motion.fx[stem].smoothingNow.toFixed(2) + '.';
+  const beatsOn = fftOn && st.fftMode === 6;
+  $('fxBeatBlock').hidden = !beatsOn;
+  if (beatsOn) {
+    for (const param in fxBeatRows) setSegActive(fxBeatRows[param], st[param]);
+    $('fxBeatSenseBlock').hidden = st.beatFollow !== 1;
+    if (document.activeElement !== fxBeatNudgeEl) fxBeatNudgeEl.value = st.beatNudge;
+    $('fxBeatNudgeOut').textContent = st.beatNudge + ' ms';
+  }
+  refreshFxNow();
+}
+// The dial: where the knob is right now (or where it rests while nothing turns it).
+function refreshFxNow() {
+  const stem = activeFxStem;
+  if (!stem) return;
+  const st = fxSt[stem], m = motion.fx[stem];
+  const k = st.fx ? Math.max(0, m.knob) : SSEffects.knobOf(st.base);
+  drawFxDial($('fxArc'), $('fxPtr'), k);
+  $('fxVal').textContent = Math.round(k * 100) + '%';
+  $('fxWhat').textContent = st.fx ? SSEffects.LIST[st.fx].name + ': the knob sets ' + SSEffects.LIST[st.fx].knob + '. Mix = how much of the effect at most.'
+                                  : 'Pick an effect above. Its knob turns with the motion below: straight ahead = minimum, turned round = maximum.';
+}
+// A 270-degree knob, as on a mixing desk: 7 o'clock = 0, 5 o'clock = 1.
+function drawFxDial(arc, ptr, k) {
+  const a0 = -135, a = a0 + 270 * k, r = 27, rad = (d) => d * Math.PI / 180;
+  const pt = (d, rr) => [32 + rr * Math.sin(rad(d)), 32 - rr * Math.cos(rad(d))];
+  const [x0, y0] = pt(a0, r), [x1, y1] = pt(a, r);
+  arc.setAttribute('d', k > 0.001 ? 'M' + x0.toFixed(1) + ' ' + y0.toFixed(1) + ' A' + r + ' ' + r + ' 0 ' + (270 * k > 180 ? 1 : 0) + ' 1 ' + x1.toFixed(1) + ' ' + y1.toFixed(1) : '');
+  const [px, py] = pt(a, 22);
+  ptr.setAttribute('x2', px.toFixed(1)); ptr.setAttribute('y2', py.toFixed(1));
 }
 
 /* ---------------- stem setups: presets + song-attached (js/setups.js) ---------------- */
@@ -1264,11 +1493,12 @@ radar.addEventListener('touchstart', (ev) => {
 // while the panel shows them.
 let tickN = 0;
 motion.onTick = () => {
-  if ((++tickN & 1) === 0) { requestRadar(); if (activeSpatialStem) refreshEventNow(); }
+  if ((++tickN & 1) === 0) { requestRadar(); if (activeSpatialStem) refreshEventNow(); if (activeFxStem) refreshFxNow(); }
   if (tickN % 20 === 0 && activeSpatialStem) {
     const st = spatial[activeSpatialStem];
     if (st.smoothingMode) refreshSpatialRows();
   }
+  if (tickN % 20 === 0 && activeFxStem && fxSt[activeFxStem].smoothingMode) refreshFxPanel();
 };
 
 /* ---------------- songs + playlist order ---------------- */
@@ -2795,8 +3025,8 @@ async function startHands() {
 // Keep the sensors matched to what the stems are set to. Blocked sources
 // (no permission, no https) retry on the next tap, which iOS needs anyway.
 function syncSources() {
-  const anyPhone = ALL_STEMS.some((s) => ctl[s] === 'phone');
-  const anyCam = ALL_STEMS.some((s) => ctl[s] === 'cam');
+  const anyPhone = ALL_STEMS.some((s) => ctl[s] === 'phone' || fxUses(s, 'phone'));
+  const anyCam = ALL_STEMS.some((s) => ctl[s] === 'cam' || fxUses(s, 'cam'));
   if (anyPhone && !phoneTurn.bound && !motionBlocked && !pairLive) startMotion();
   else if (!anyPhone && phoneTurn.bound) { unbindOrientation(); toast('Motion off - the stems stay where they are'); }
   if (anyCam && !hand.running && !handStarting && !handBlocked) startHands();
@@ -3035,25 +3265,30 @@ if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); 
     songCol: '<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/>',
     sepCol: '<path d="M12 3v6l-6 4v8M12 9l6 4v8"/>',
     spatial: '<circle cx="12" cy="12" r="2.5"/><path d="M6.5 12a5.5 5.5 0 0 1 11 0M3 12a9 9 0 0 1 18 0"/>',
+    effects: '<circle cx="12" cy="13" r="7"/><path d="M12 13l3.5-4M6 20l-1.5 1.5M18 20l1.5 1.5M12 3v2"/>',
   };
-  const LABEL = { stemCol: 'Stems', centerCol: 'Control', songCol: 'Songs', sepCol: 'Split', spatial: 'Motion control' };
+  const LABEL = { stemCol: 'Stems', centerCol: 'Control', songCol: 'Songs', sepCol: 'Split', spatial: 'Motion control', effects: 'Effects' };
   const ids = ['stemCol', 'centerCol', 'songCol', 'sepCol'].filter((id) => document.getElementById(id));
   const KEY = 'spatialstage.panels';
   const narrow = window.matchMedia('(max-width: 899px)');
   let shown = new Set(['stemCol', 'centerCol', 'songCol']);
   try { const v = JSON.parse(localStorage.getItem(KEY)); if (Array.isArray(v) && v.length) shown = new Set(v); } catch (e) {}
   let pick = 'centerCol';          // the one window a phone shows
-  let lastStem = null;
+  let lastStem = null, lastFxStem = null;
   const rail = document.createElement('nav');
   rail.id = 'rail'; rail.setAttribute('aria-label', 'Windows');
   const btns = {};
-  for (const id of [...ids, 'spatial']) {
+  for (const id of [...ids, 'spatial', 'effects']) {
     const b = document.createElement('button');
     b.className = 'rail-btn'; b.type = 'button';
-    b.title = id === 'spatial' ? 'Motion control / LED settings for a stem' : 'Show or hide the ' + LABEL[id] + ' window';
+    b.title = id === 'spatial' ? 'Motion control / LED settings for a stem' : id === 'effects' ? 'Effects: a reverb, echo, filter... per stem, its knob turned by motion' : 'Show or hide the ' + LABEL[id] + ' window';
     b.innerHTML = '<svg viewBox="0 0 24 24">' + ICON[id] + '</svg><span>' + LABEL[id] + '</span>';
-    b.addEventListener('click', () => id === 'spatial' ? toggleSide() : toggle(id));
+    b.addEventListener('click', () => id === 'spatial' ? toggleSide() : id === 'effects' ? toggleFx() : toggle(id));
     rail.appendChild(b); btns[id] = b;
+  }
+  function toggleFx() {
+    if (activeFxStem) openFxPanel(activeFxStem);
+    else openFxPanel(lastFxStem || ALL_STEMS.find(stemShown) || ALL_STEMS[0]);
   }
   document.body.appendChild(rail);
   for (const id of ids) {
@@ -3084,7 +3319,9 @@ if (SSHelper.seen && !isPhone) checkHelper().then(() => { scheduleHelperPoll(); 
   }
   window.railSync = function () {
     if (activeSpatialStem) lastStem = activeSpatialStem;
+    if (activeFxStem) lastFxStem = activeFxStem;
     btns.spatial.classList.toggle('on', sideOpen());
+    btns.effects.classList.toggle('on', activeFxStem !== null);
   };
   narrow.addEventListener('change', apply);
   apply();

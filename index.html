@@ -416,7 +416,17 @@
   .close-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #aaa; border-radius: 7px;
                width: 30px; height: 28px; font-size: 1.05rem; line-height: 1; cursor: pointer; flex: none; }
   .close-btn:hover { color: #eee; background: rgba(255,255,255,0.12); }
-  #sideCol #spatialPanel, #sideCol #ledPanel, #sideCol #extPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+  #sideCol #spatialPanel, #sideCol #ledPanel, #sideCol #extPanel, #sideCol #fxPanel { margin: 0 0 12px; padding: 0; border-top: none; }
+  #sideCol #spatialPanel:not([hidden]) ~ #fxPanel:not([hidden]) { margin-top: 18px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); }
+  /* --- effects (js/effects.js) --- */
+  .fx-btn.on { color: #c58cff; border-color: rgba(197,140,255,0.6); background: rgba(197,140,255,0.12); }
+  .fx-btn.open { background: rgba(255,255,255,0.16); }
+  .fx-now { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; }
+  .fx-dial { width: 64px; height: 64px; flex: none; }
+  .fx-dial .knob-ptr { stroke: #c58cff; }
+  .fx-dial .knob-hub { stroke: #c58cff; }
+  .fx-arc { fill: none; stroke: #c58cff; stroke-width: 4; stroke-linecap: round; opacity: 0.85; }
+  .fx-val { font-size: 1.3rem; font-weight: 800; color: #c58cff; font-variant-numeric: tabular-nums; }
   .ext-btn.on { color: #ffb347; border-color: rgba(255,179,71,0.6); background: rgba(255,179,71,0.12); }
   .ext-btn.open { background: rgba(255,255,255,0.16); }
   .stem-card[hidden] { display: none; }
@@ -720,6 +730,124 @@
       <div class="weight-row"><label>Deg</label><input type="range" id="spatialBase" min="-180" max="180" step="1"><output id="spatialBaseOut"></output></div>
       </div>
     </div>
+
+    <!-- Effects (js/effects.js): the same motion as Motion control, but it turns the knob of an
+         effect on the stem instead of moving the stem. Front = knob at minimum, behind = maximum. -->
+    <div id="fxPanel" hidden>
+      <div class="spatial-title"><span>EFFECTS &mdash; <span id="fxStemName"></span></span><button id="fxCloseBtn" class="close-btn" title="Close" aria-label="Close effects panel">&times;</button></div>
+      <div class="field-label">Stem</div>
+      <div class="seg-row" id="fxStemRow"></div>
+      <div class="field-label">Effect the knob drives</div>
+      <div class="seg-row" id="fxTypeRow"></div>
+      <div class="fx-now">
+        <svg viewBox="0 0 64 64" class="fx-dial" aria-hidden="true">
+          <circle class="knob-track" cx="32" cy="32" r="27"></circle>
+          <path class="fx-arc" id="fxArc" d=""></path>
+          <line class="knob-ptr" id="fxPtr" x1="32" y1="32" x2="32" y2="10"></line>
+          <circle class="knob-hub" cx="32" cy="32" r="4"></circle>
+        </svg>
+        <div><div class="fx-val" id="fxVal">0%</div><div class="hint left" id="fxWhat"></div></div>
+      </div>
+      <div class="weight-row"><label>Mix</label><input type="range" id="fxMix" min="0" max="1" step="0.01"><output id="fxMixOut"></output></div>
+
+      <div class="field-label">Knob turned by</div>
+      <div class="seg-row" id="fxCtlRow">
+        <button class="seg-btn" data-value="spatial">Spatial</button>
+        <button class="seg-btn" data-value="phone">Phone</button>
+        <button class="seg-btn" data-value="cam">Camera</button>
+        <button class="seg-btn" data-value="none">Rest only</button>
+      </div>
+      <div class="hint left" id="fxCtlHint"></div>
+
+      <div id="fxSecSpatial" hidden>
+      <div class="field-label">Smoothing (final output, any source &mdash; left = smooth/gliding, right = instant/jittery)</div>
+      <div class="seg-row" id="fxSmoothingModeRow">
+        <button class="seg-btn" data-value="0">Fixed</button>
+        <button class="seg-btn" data-value="1">Louder = snappier</button>
+        <button class="seg-btn" data-value="2">Louder = smoother</button>
+      </div>
+      <div class="weight-row"><label id="fxSmoothingLabel">Amount</label><input type="range" id="fxSmoothing" min="0.02" max="1" step="0.01"><output id="fxSmoothingOut"></output></div>
+      <div class="hint left" id="fxSmoothingHint" hidden></div>
+
+      <div class="field-label">Motion from</div>
+      <div class="seg-row" id="fxSourceRow">
+        <button class="seg-btn" data-value="0">FFT</button>
+        <button class="seg-btn" data-value="1">Presets</button>
+        <button class="seg-btn" data-value="2">Mixed</button>
+      </div>
+      <div id="fxMixRow" hidden>
+        <div class="weight-row"><label>FFT&harr;Preset</label><input type="range" id="fxTs2" min="0" max="1" step="0.01"><output id="fxTs2Out"></output></div>
+      </div>
+
+      <div id="fxFftSection">
+        <div class="field-label">From which stem (its sound turns the knob &mdash; any stem can drive another's effect)</div>
+        <div class="seg-row" id="fxFftSrcRow"></div>
+        <div class="field-label">Algorithm</div>
+        <div class="seg-row" id="fxFftModeRow">
+          <button class="seg-btn" data-value="0">Pitch</button>
+          <button class="seg-btn" data-value="1">Onset</button>
+          <button class="seg-btn" data-value="2">Band</button>
+          <button class="seg-btn" data-value="4">Follow</button>
+          <button class="seg-btn" data-value="5">Sections</button>
+          <button class="seg-btn" data-value="6">Beat steps</button>
+        </div>
+        <div class="hint left">Follow = the stem's own stereo position. Sections = a new knob setting at each change in the song. Beat steps = the knob steps on each beat.</div>
+        <div id="fxBeatBlock" hidden>
+          <div class="field-label">Follow &mdash; a steady beat, or every peak</div>
+          <div class="seg-row" id="fxBeatFollowRow">
+            <button class="seg-btn" data-value="0">Steady beat</button>
+            <button class="seg-btn" data-value="1">Every peak</button>
+          </div>
+          <div id="fxBeatSenseBlock" hidden>
+            <div class="field-label">Peak sensitivity</div>
+            <div class="seg-row" id="fxBeatSenseRow">
+              <button class="seg-btn" data-value="0">Hits only</button>
+              <button class="seg-btn" data-value="1">Normal</button>
+              <button class="seg-btn" data-value="2">Everything</button>
+            </div>
+          </div>
+          <div class="field-label">Step every (beats or peaks)</div>
+          <div class="seg-row" id="fxBeatEveryRow">
+            <button class="seg-btn" data-value="1">1</button>
+            <button class="seg-btn" data-value="2">2</button>
+            <button class="seg-btn" data-value="4">4</button>
+            <button class="seg-btn" data-value="8">8</button>
+          </div>
+          <div class="field-label">Knob positions</div>
+          <div class="seg-row" id="fxBeatStepsRow">
+            <button class="seg-btn" data-value="2">2</button>
+            <button class="seg-btn" data-value="3">3</button>
+            <button class="seg-btn" data-value="4">4</button>
+            <button class="seg-btn" data-value="6">6</button>
+            <button class="seg-btn" data-value="8">8</button>
+          </div>
+          <div class="field-label">Order</div>
+          <div class="seg-row" id="fxBeatPatternRow">
+            <button class="seg-btn" data-value="0">&rarr; Clockwise</button>
+            <button class="seg-btn" data-value="1">&larr; Anticlockwise</button>
+            <button class="seg-btn" data-value="2">&harr; Back and forth</button>
+            <button class="seg-btn" data-value="3">Shuffle</button>
+          </div>
+          <div class="field-label">Nudge (ms &mdash; later if the step feels early, earlier if late)</div>
+          <div class="weight-row"><label>Nudge</label><input type="range" id="fxBeatNudge" min="-200" max="200" step="5"><output id="fxBeatNudgeOut"></output></div>
+        </div>
+      </div>
+
+      <div id="fxPresetSection">
+        <div class="field-label">Preset motion</div>
+        <div class="seg-row" id="fxPresetModeRow">
+          <button class="seg-btn" data-value="0">Circle</button>
+          <button class="seg-btn" data-value="1">Sine</button>
+        </div>
+        <div id="fxPresetRateBlock">
+          <div class="weight-row"><label>Rate</label><input type="range" id="fxPresetRate" min="0" max="1" step="0.01"><output id="fxPresetRateOut"></output></div>
+        </div>
+      </div>
+      </div>
+
+      <div class="field-label">Rest (where the knob sits before any motion &mdash; 0&deg; = minimum, &plusmn;180&deg; = maximum)</div>
+      <div class="weight-row"><label>Deg</label><input type="range" id="fxBase" min="-180" max="180" step="1"><output id="fxBaseOut"></output></div>
+    </div>
   </aside>
 
   <section class="panel" id="stemCol">
@@ -945,6 +1073,7 @@
 <script src="js/qr.js"></script>
 <script src="js/beats.js"></script>
 <script src="js/events.js"></script>
+<script src="js/effects.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/motion.js"></script>
 <script src="js/helper.js"></script>

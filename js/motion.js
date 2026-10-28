@@ -182,7 +182,35 @@
     tick(dt, engine, geometryBase, motion) {
       const p = this.params;
       this.tickCount++;
+      const blended = this._blend(this._sources(dt, engine, motion));
 
+      // --- final smoothing, then the arm gate ---
+      if (p.smoothingMode === 1 || p.smoothingMode === 2) { if (this.tickCount % 2 === 0) this._levelSmoothing(engine); }
+      // An unarmed stem parks at true centre (0 deg, straight ahead) rather
+      // than at its base azimuth as the Pd rig does: on this rig "not armed"
+      // reads as "out of the picture", and the smoother is reset so re-arming
+      // glides from centre rather than jumping.
+      const smoothed = this.finalSmooth.tick(blended);
+      if (this.armed) {
+        this.motionOut = smoothed;
+        this.out = wrap180(smoothed + p.base);
+        this.effective = wrap180(geometryBase + this.out);
+      } else {
+        // Snap to the offset that puts the stem at 0 deg once base and
+        // geometry are added back on, so a re-armed stem glides out from
+        // centre instead of jumping to its base first.
+        this.finalSmooth.snap(wrap180(-geometryBase - p.base));
+        this.out = wrap180(-geometryBase);
+        this.effective = 0;
+      }
+      this._events(dt, engine, geometryBase);
+      engine.setAzimuth(this.stem, this.effective);
+    }
+
+    // The preset and FFT sources for this tick: returns the preset's azimuth and leaves the FFT's
+    // in this.fftAz. Shared with FxMotion, which turns an effect's knob with the same sources.
+    _sources(dt, engine, motion) {
+      const p = this.params;
       // --- preset-source: 0 circle, 1 sine ---
       const rate = p.presetRate * this.evRate;
       this.presetPhase = (this.presetPhase + rate * dt) % 1;
@@ -226,8 +254,12 @@
           }
         }
       }
+      return presetAz;
+    }
 
-      // --- blend-mixer ---
+    // --- blend-mixer ---
+    _blend(presetAz) {
+      const p = this.params;
       let blended;
       if (p.blendMode >= 0.5) {
         const [w1, w2, w3] = p.blendWeights3;
@@ -237,28 +269,7 @@
         blended = blend2(blend2(this.phone, this.fftAz, ts1), presetAz, ts2);
       }
       if (!isFinite(blended)) blended = this.phone;
-
-      // --- final smoothing, then the arm gate ---
-      if (p.smoothingMode === 1 || p.smoothingMode === 2) { if (this.tickCount % 2 === 0) this._levelSmoothing(engine); }
-      // An unarmed stem parks at true centre (0 deg, straight ahead) rather
-      // than at its base azimuth as the Pd rig does: on this rig "not armed"
-      // reads as "out of the picture", and the smoother is reset so re-arming
-      // glides from centre rather than jumping.
-      const smoothed = this.finalSmooth.tick(blended);
-      if (this.armed) {
-        this.motionOut = smoothed;
-        this.out = wrap180(smoothed + p.base);
-        this.effective = wrap180(geometryBase + this.out);
-      } else {
-        // Snap to the offset that puts the stem at 0 deg once base and
-        // geometry are added back on, so a re-armed stem glides out from
-        // centre instead of jumping to its base first.
-        this.finalSmooth.snap(wrap180(-geometryBase - p.base));
-        this.out = wrap180(-geometryBase);
-        this.effective = 0;
-      }
-      this._events(dt, engine, geometryBase);
-      engine.setAzimuth(this.stem, this.effective);
+      return blended;
     }
 
     // Sound events on top of everything above: the layer reads the stem's
@@ -369,15 +380,57 @@
     }
   }
 
+  // The Effects menu's motion (js/effects.js): the same sources, blend and smoothing as a stem's
+  // motion, but the angle it ends at turns the stem's effect knob (front = 0, behind = 1) instead
+  // of moving the stem. ctl 'spatial' = FFT / presets; 'phone' / 'cam' = the turn those send
+  // (this.phone, fed by the page); null = the knob rests at `base`. Nothing runs with no effect.
+  class FxMotion extends StemMotion {
+    constructor(stem, index, stemCount) {
+      super(stem, index, stemCount);
+      this.params = SSEffects.defaults(index, stemCount);
+      this.knob = -1;          // last value given to the engine (-1: none yet)
+      this.az = 0;             // the knob's angle, for the menu's dial
+    }
+    set(param, value) {
+      const v = SSEffects.clean(param, value, this.stemCount);
+      if (v === undefined) return;
+      this.params[param] = Array.isArray(v) ? v.slice() : v;
+      if (param === 'smoothing' || param === 'smoothingMode') {
+        this.smoothingNow = this.params.smoothing;
+        this.finalSmooth.k = this.smoothingNow;
+      }
+    }
+    fftContributes() { return this.params.ctl === 'spatial' && super.fftContributes(); }
+    tick(dt, engine, motion) {
+      const p = this.params;
+      if (!p.fx) return;
+      this.tickCount++;
+      let az;
+      if (!p.ctl) {
+        this.finalSmooth.snap(0);
+        az = p.base;
+      } else {
+        const target = p.ctl === 'spatial' ? this._blend(this._sources(dt, engine, motion)) : this.phone;
+        if (p.smoothingMode === 1 || p.smoothingMode === 2) { if (this.tickCount % 2 === 0) this._levelSmoothing(engine); }
+        az = wrap180(this.finalSmooth.tick(target) + p.base);
+      }
+      this.az = az;
+      const k = SSEffects.knobOf(az);
+      if (Math.abs(k - this.knob) > 0.0005) { this.knob = k; engine.setFxKnob(this.stem, k); }
+    }
+  }
+
   class Motion {
     constructor(engine) {
       this.engine = engine;
       this.stems = {};
+      this.fx = {};
       engine.stems.forEach((s, i) => {
         this.stems[s] = new StemMotion(s, i, engine.stems.length);
         // Until the first tick, show each stem at its home position rather
         // than piled up at 0 deg.
         this.stems[s].effective = engine.geometry[s].azimuth;
+        this.fx[s] = new FxMotion(s, i, engine.stems.length);
       });
       this.timer = null; this.lastAt = 0;
       this.onTick = null;
@@ -395,6 +448,7 @@
       for (const s of this.engine.stems) {
         this.stems[s].tick(dt, this.engine, this.engine.geometry[s].azimuth, this);
       }
+      for (const s of this.engine.stems) this.fx[s].tick(dt, this.engine, this);
       if (this.onTick) this.onTick();
     }
     // Loudest stem right now, read once per tick however many stems use the whole mix as their beat.
@@ -419,6 +473,14 @@
     }
     restore(snap) {
       for (const s in snap) if (this.stems[s]) for (const k in snap[s]) this.setParam(s, k, snap[s][k]);
+    }
+    // Effects (FxMotion): the turn a phone or the camera gives the knob, and its settings.
+    setFxPhone(stem, deg) { this.fx[stem].phone = deg; }
+    setFxParam(stem, param, value) { this.fx[stem].set(param, value); }
+    fxSnapshot() {
+      const o = {};
+      for (const s in this.fx) o[s] = JSON.parse(JSON.stringify(this.fx[s].params));
+      return o;
     }
   }
 

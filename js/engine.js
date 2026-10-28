@@ -59,6 +59,8 @@
       this.inputs = new Map();             // deviceId -> { stream, source, splitter, channels }
       this.azimuth = {};
       for (const s of stems) this.azimuth[s] = geometry[s].azimuth;
+      this.fxWanted = {};                  // stem -> { type, mix } (setEffect before the audio starts)
+      this.fxKnob = {};                    // stem -> 0..1, the knob FxMotion turns
     }
 
     // The AudioContext must be created/resumed from a user gesture on every
@@ -131,7 +133,14 @@
       n.dop = ctx.createDelay(0.5); n.dop.delayTime.value = 0;
       n.distLp = ctx.createBiquadFilter(); n.distLp.type = 'lowpass'; n.distLp.frequency.value = 20000; n.distLp.Q.value = 0.707;
       n.distGain = ctx.createGain(); n.distGain.gain.value = 1;
-      n.input.connect(n.dop); n.dop.connect(n.distLp); n.distLp.connect(n.distGain); n.distGain.connect(n.split);
+      // Effect stage (the Effects menu, js/effects.js): the stem's own audio -> its effect -> the
+      // distance stage and panners, so the effect moves with the stem. With no effect it is one
+      // unity gain; an effect's nodes are only built while it is chosen (setEffect).
+      n.fxDry = ctx.createGain(); n.fxDry.gain.value = 1;
+      n.fxOut = ctx.createGain(); n.fxOut.channelCount = 2; n.fxOut.channelCountMode = 'explicit';
+      n.input.connect(n.fxDry); n.fxDry.connect(n.fxOut);
+      n.fx = { type: 0, mix: 1, knob: this.fxKnob[stem] || 0, unit: null };
+      n.fxOut.connect(n.dop); n.dop.connect(n.distLp); n.distLp.connect(n.distGain); n.distGain.connect(n.split);
       n.dist = { gain: 1, cutoff: 20000, delayMs: 0 };
       // Level: BRANCH_GAIN * volume * (muted ? 0 : 1), ramped like Pd's line~ 20 ms.
       n.out.gain.value = BRANCH_GAIN;
@@ -205,7 +214,158 @@
       this.nodes[stem] = n;
       this._applyAzimuth(stem, this.azimuth[stem], true);
       this._applyLevel(stem, true);
+      const w = this.fxWanted[stem];
+      if (w && w.type) this._buildEffect(stem, w.type, w.mix);
       return n;
+    }
+
+    /* ---------------- effects (the Effects menu, js/effects.js) ---------------- */
+
+    // Which effect a stem plays (0 = none) and its mix 0..1. A change of effect crossfades over
+    // about 60 ms and then takes the old one's nodes down.
+    setEffect(stem, type, mix) {
+      this.fxWanted[stem] = { type, mix };
+      const n = this.nodes[stem];
+      if (!n || !this.ctx) return;
+      if (n.fx.type === type) { n.fx.mix = mix; this._applyFx(stem, false); return; }
+      this._buildEffect(stem, type, mix);
+    }
+
+    // The knob, 0..1 (FxMotion, about 40 times a second).
+    setFxKnob(stem, k) {
+      this.fxKnob[stem] = k;
+      const n = this.nodes[stem];
+      if (!n || !this.ctx) return;
+      n.fx.knob = k;
+      this._applyFx(stem, false);
+    }
+
+    _buildEffect(stem, type, mix) {
+      const ctx = this.ctx, n = this.nodes[stem], t = ctx.currentTime;
+      const old = n.fx.unit;
+      if (old) {
+        old.out.gain.setTargetAtTime(0, t, 0.015);
+        setTimeout(() => { try { old.stop(); } catch (e) {} }, 150);
+      }
+      const def = SSEffects.LIST[type];
+      n.fx.type = type; n.fx.mix = mix;
+      n.fx.unit = def && type ? this._effectUnit(def.key) : null;
+      if (n.fx.unit) {
+        n.input.connect(n.fx.unit.in);
+        n.fx.unit.out.gain.value = 0;
+        n.fx.unit.out.connect(n.fxOut);
+        n.fx.unit.out.gain.setTargetAtTime(1, t, 0.015);
+      }
+      n.fxDry.gain.setTargetAtTime(n.fx.unit ? 0 : 1, t, 0.015);
+      this._applyFx(stem, true);
+    }
+
+    _applyFx(stem, immediate) {
+      const n = this.nodes[stem], u = n.fx.unit;
+      if (!u) return;
+      const p = SSEffects.params[u.key](n.fx.knob, n.fx.mix);
+      u.set(p, this.ctx.currentTime, immediate);
+    }
+
+    // One effect: { key, in, out, set(params, t, immediate), stop() }. `in` takes the stem's two
+    // channels; `out` (a gain the crossfade uses) carries dry * the stem + wet * the effect.
+    _effectUnit(key) {
+      const ctx = this.ctx;
+      const gain = (v) => { const g = ctx.createGain(); g.gain.value = v; return g; };
+      const ramp = (param, v, t, immediate, tau) => { if (immediate) param.value = v; else param.setTargetAtTime(v, t, tau || 0.02); };
+      const u = { key, in: gain(1), out: gain(0), dry: gain(1), wet: gain(0), extra: [] };
+      u.in.channelCount = 2; u.in.channelCountMode = 'explicit';
+      u.in.connect(u.dry); u.dry.connect(u.out); u.wet.connect(u.out);
+      let apply = () => {};
+      if (key === 'reverb') {
+        const conv = ctx.createConvolver();
+        conv.buffer = this._reverbIr();
+        u.in.connect(conv); conv.connect(u.wet);
+      } else if (key === 'echo') {
+        const d = ctx.createDelay(1); d.delayTime.value = SSEffects.ECHO_S;
+        const fb = gain(0.2);
+        u.in.connect(d); d.connect(fb); fb.connect(d); d.connect(u.wet);
+        apply = (p, t, im) => ramp(fb.gain, p.feedback, t, im);
+      } else if (key === 'flanger') {
+        const d = ctx.createDelay(0.05);
+        u.in.connect(d); d.connect(u.wet);
+        apply = (p, t, im) => ramp(d.delayTime, p.delayMs / 1000, t, im, 0.03);
+      } else if (key === 'phaser') {
+        const aps = [0, 1, 2, 3].map(() => { const f = ctx.createBiquadFilter(); f.type = 'allpass'; f.Q.value = 0.5; return f; });
+        u.in.connect(aps[0]); aps[0].connect(aps[1]); aps[1].connect(aps[2]); aps[2].connect(aps[3]); aps[3].connect(u.wet);
+        apply = (p, t, im) => aps.forEach((f) => ramp(f.frequency, p.freq, t, im, 0.03));
+      } else if (key === 'chorus') {
+        // Both channels through a delay swung by one slow sine, the right one in the opposite phase.
+        const split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2);
+        const lfo = ctx.createOscillator(); lfo.frequency.value = SSEffects.CHORUS_HZ;
+        const depthL = gain(0), depthR = gain(0);
+        u.in.connect(split);
+        [0, 1].forEach((c) => {
+          const d = ctx.createDelay(0.05); d.delayTime.value = SSEffects.CHORUS_MS / 1000;
+          split.connect(d, c); d.connect(merge, 0, c);
+          (c ? depthR : depthL).connect(d.delayTime);
+        });
+        lfo.connect(depthL); lfo.connect(depthR);
+        merge.connect(u.wet);
+        lfo.start();
+        u.extra.push(lfo);
+        apply = (p, t, im) => { ramp(depthL.gain, p.depthMs / 1000, t, im); ramp(depthR.gain, -p.depthMs / 1000, t, im); };
+      } else if (key === 'lowpass' || key === 'highpass') {
+        const f = ctx.createBiquadFilter(); f.type = key; f.Q.value = 0.707;
+        u.in.connect(f); f.connect(u.wet);
+        apply = (p, t, im) => ramp(f.frequency, p.freq, t, im, 0.02);
+      } else if (key === 'drive') {
+        // tanh(g * x): the shaper's curve is tanh(30 x) over -1..1, so the stem is scaled by g / 30 first.
+        const pre = gain(1 / 30), post = gain(1), shaper = ctx.createWaveShaper();
+        const curve = new Float32Array(4096);
+        for (let i = 0; i < curve.length; i++) curve[i] = Math.tanh(30 * (i / (curve.length - 1) * 2 - 1));
+        shaper.curve = curve; shaper.oversample = '2x';
+        u.in.connect(pre); pre.connect(shaper); shaper.connect(post); post.connect(u.wet);
+        apply = (p, t, im) => { ramp(pre.gain, p.pre / 30, t, im); ramp(post.gain, p.post, t, im); };
+      } else if (key === 'crush') {
+        // Rounds every sample to 2^(bits-1) steps a side: a staircase curve, redrawn when the bits move.
+        let shaper = ctx.createWaveShaper(), bits = 0;
+        u.in.connect(shaper); shaper.connect(u.wet);
+        apply = (p) => {
+          if (Math.abs(p.bits - bits) < 0.2) return;
+          bits = p.bits;
+          const q = Math.pow(2, bits - 1), curve = new Float32Array(8192);
+          for (let i = 0; i < curve.length; i++) { const x = i / (curve.length - 1) * 2 - 1; curve[i] = Math.round(x * q) / q; }
+          try { shaper.curve = curve; }
+          catch (e) {   // a browser that sets a curve only once: swap in a new shaper
+            const s2 = ctx.createWaveShaper(); s2.curve = curve;
+            u.in.connect(s2); s2.connect(u.wet);
+            u.in.disconnect(shaper); shaper.disconnect(); shaper = s2;
+          }
+        };
+      }
+      u.set = (p, t, immediate) => {
+        ramp(u.dry.gain, p.dry, t, immediate);
+        ramp(u.wet.gain, p.wet, t, immediate);
+        apply(p, t, immediate);
+      };
+      u.stop = () => {
+        for (const o of u.extra) { try { o.stop(); } catch (e) {} }
+        try { u.in.disconnect(); } catch (e) {}
+        try { u.out.disconnect(); } catch (e) {}
+      };
+      return u;
+    }
+
+    // A 2.6 s stereo hall: decaying noise, a different draw per ear. Made once per audio context.
+    _reverbIr() {
+      if (this._ir) return this._ir;
+      const sr = this.ctx.sampleRate, len = Math.round(sr * 2.6), pre = Math.round(sr * 0.012);
+      const buf = this.ctx.createBuffer(2, len, sr);
+      for (let c = 0; c < 2; c++) {
+        const d = buf.getChannelData(c);
+        for (let i = pre; i < len; i++) {
+          const t = (i - pre) / sr;
+          d[i] = (Math.random() * 2 - 1) * Math.exp(-6.9 * t / 2.6) * Math.min(1, t / 0.02 + 0.3);
+        }
+      }
+      this._ir = buf;
+      return buf;
     }
 
     setPanMode(mode) {
